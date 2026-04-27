@@ -19,6 +19,7 @@ Dependencies:
 """
 
 import sys, os, math, tempfile
+from typing import List, Tuple, Optional, Dict
 import numpy as np
 
 from PyQt6.QtWidgets import (
@@ -704,6 +705,11 @@ class MoleculeCanvas(QSvgWidget):
         self.active_vectors: Optional[np.ndarray] = None
         self.animation_phase: float = 0.0
         self.animation_amplitude: float = 0.0
+        
+        # Build options
+        self.build_mode: bool = False
+        self.build_element: str = "C"
+        self.auto_adjust_h: bool = False
 
     # ── drag and drop ─────────────────────────────────────────────────────────
 
@@ -893,6 +899,13 @@ class MoleculeCanvas(QSvgWidget):
             if b_idx is not None:
                 self.requestHistorySave.emit()
                 self.molecule.bonds[b_idx].order = (self.molecule.bonds[b_idx].order % 3) + 1
+                
+                if self.auto_adjust_h:
+                    at1, at2 = self.molecule.atoms[self.molecule.bonds[b_idx].i], self.molecule.atoms[self.molecule.bonds[b_idx].j]
+                    self._apply_auto_h(at1)
+                    self._apply_auto_h(at2)
+                    optimize_geometry(self.molecule, max_steps=1000, fixed_indices=self._get_non_h_indices())
+                
                 self.moleculeChanged.emit()
                 self.request_render()
                 return
@@ -913,6 +926,12 @@ class MoleculeCanvas(QSvgWidget):
             
             new_atom = Atom(self.build_element, abs_pos[0], abs_pos[1], abs_pos[2])
             self.molecule.atoms.append(new_atom)
+            new_idx = len(self.molecule.atoms) - 1
+            
+            if self.auto_adjust_h:
+                self._apply_auto_h(self.molecule.atoms[new_idx])
+                optimize_geometry(self.molecule, max_steps=1000, fixed_indices=self._get_non_h_indices())
+                
             self.moleculeChanged.emit()
             self.request_render()
             return
@@ -921,17 +940,47 @@ class MoleculeCanvas(QSvgWidget):
             idx = self._get_hit_atom(event.position().toPoint())
             if idx is not None:
                 self.requestHistorySave.emit()
-                # Remove atom
-                self.molecule.atoms.pop(idx)
-                # Remove and re-index bonds
-                new_bonds = []
+                # 1. Identify connected H atoms to remove
+                h_to_remove = []
+                neighbors_to_adjust = []
+                
                 for b in self.molecule.bonds:
-                    if b.i == idx or b.j == idx:
+                    if b.i == idx:
+                        nb_idx = b.j
+                    elif b.j == idx:
+                        nb_idx = b.i
+                    else:
                         continue
-                    ni = b.i - 1 if b.i > idx else b.i
-                    nj = b.j - 1 if b.j > idx else b.j
-                    new_bonds.append(Bond(ni, nj, b.order))
-                self.molecule.bonds = new_bonds
+                    
+                    nb_atom = self.molecule.atoms[nb_idx]
+                    if nb_atom.element == "H":
+                        # Only remove if it has no other bonds
+                        other_bonds = 0
+                        for b2 in self.molecule.bonds:
+                            if b2.i == nb_idx or b2.j == nb_idx: other_bonds += 1
+                        if other_bonds == 1:
+                            h_to_remove.append(nb_idx)
+                    else:
+                        neighbors_to_adjust.append(nb_atom)
+
+                # 2. Delete the atoms (highest index first to avoid shifts)
+                all_to_del = sorted(list(set(h_to_remove + [idx])), reverse=True)
+                for d_idx in all_to_del:
+                    self.molecule.atoms.pop(d_idx)
+                    new_bonds = []
+                    for b in self.molecule.bonds:
+                        if b.i == d_idx or b.j == d_idx: continue
+                        ni = b.i - 1 if b.i > d_idx else b.i
+                        nj = b.j - 1 if b.j > d_idx else b.j
+                        new_bonds.append(Bond(ni, nj, b.order))
+                    self.molecule.bonds = new_bonds
+
+                # 3. Adjust neighbors if auto_adjust_h is on
+                if self.auto_adjust_h:
+                    for nb_atom in neighbors_to_adjust:
+                        self._apply_auto_h(nb_atom)
+                    optimize_geometry(self.molecule, max_steps=1000, fixed_indices=self._get_non_h_indices())
+
                 self.moleculeChanged.emit()
                 self.request_render()
                 return
@@ -989,6 +1038,13 @@ class MoleculeCanvas(QSvgWidget):
                 self.requestHistorySave.emit()
                 # Bond existing
                 self.molecule.bonds.append(Bond(self._bonding_from, end_idx))
+                
+                if self.auto_adjust_h:
+                    at1, at2 = self.molecule.atoms[self._bonding_from], self.molecule.atoms[end_idx]
+                    self._apply_auto_h(at1)
+                    self._apply_auto_h(at2)
+                    optimize_geometry(self.molecule, max_steps=1000, fixed_indices=self._get_non_h_indices())
+                
                 self.moleculeChanged.emit()
             elif end_idx is None:
                 self.requestHistorySave.emit()
@@ -1000,6 +1056,13 @@ class MoleculeCanvas(QSvgWidget):
                 new_idx = len(self.molecule.atoms)
                 self.molecule.atoms.append(Atom(self.build_element, abs_pos[0], abs_pos[1], abs_pos[2]))
                 self.molecule.bonds.append(Bond(self._bonding_from, new_idx))
+                
+                if self.auto_adjust_h:
+                    at1, at2 = self.molecule.atoms[self._bonding_from], self.molecule.atoms[new_idx]
+                    self._apply_auto_h(at1)
+                    self._apply_auto_h(at2)
+                    optimize_geometry(self.molecule, max_steps=1000, fixed_indices=self._get_non_h_indices())
+                    
                 self.moleculeChanged.emit()
             
             self._bonding_from = None
@@ -1011,6 +1074,120 @@ class MoleculeCanvas(QSvgWidget):
         self._drag_mode  = "none"
         self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.request_render(delay_ms=0)
+
+    def _apply_auto_h(self, atom: Atom):
+        valencies = {
+            "H": 1, "C": 4, "N": 3, "O": 2, "F": 1,
+            "P": 3, "S": 2, "Cl": 1, "Br": 1, "I": 1,
+            "Si": 4, "B": 3
+        }
+        
+        # Find current index of this atom object
+        try:
+            atom_idx = -1
+            for i, a in enumerate(self.molecule.atoms):
+                if a is atom:
+                    atom_idx = i
+                    break
+            if atom_idx == -1: return
+        except Exception: return
+        
+        v = valencies.get(atom.element, 0)
+        if v <= 0: return
+        
+        # 1. Identify current Hydrogens bonded ONLY to this atom
+        h_to_remove = []
+        bonded_to_other = 0
+        
+        # We need to find all neighbors
+        neighbors = []
+        for i, b in enumerate(self.molecule.bonds):
+            if b.i == atom_idx:
+                neighbors.append((b.j, b.order, i))
+            elif b.j == atom_idx:
+                neighbors.append((b.i, b.order, i))
+        
+        current_h_indices = []
+        for nb_idx, order, bond_idx in neighbors:
+            nb_atom = self.molecule.atoms[nb_idx]
+            if nb_atom.element == "H":
+                # Check if this H is bonded to anything else
+                other_bonds = 0
+                for b in self.molecule.bonds:
+                    if (b.i == nb_idx or b.j == nb_idx):
+                        other_bonds += 1
+                if other_bonds == 1:
+                    current_h_indices.append((nb_idx, bond_idx))
+                else:
+                    bonded_to_other += order
+            else:
+                bonded_to_other += order
+        
+        needed = v - bonded_to_other
+        
+        # 2. Adjust
+        if len(current_h_indices) > needed:
+            # Remove excess
+            to_del_atoms = sorted([idx for idx, b_idx in current_h_indices[needed:]], reverse=True)
+            for idx in to_del_atoms:
+                # Remove atom and its bonds
+                self.molecule.atoms.pop(idx)
+                new_bonds = []
+                for b in self.molecule.bonds:
+                    if b.i == idx or b.j == idx: continue
+                    ni = b.i - 1 if b.i > idx else b.i
+                    nj = b.j - 1 if b.j > idx else b.j
+                    new_bonds.append(Bond(ni, nj, b.order))
+                self.molecule.bonds = new_bonds
+                # Update our target atom_idx if it shifted
+                if atom_idx > idx: atom_idx -= 1
+        elif len(current_h_indices) < needed:
+            # 2. Add missing
+            avg_vec = np.zeros(3)
+            b_count = 0
+            for b in self.molecule.bonds:
+                if b.i == atom_idx:
+                    other = self.molecule.atoms[b.j]
+                    avg_vec += np.array([other.x - atom.x, other.y - atom.y, other.z - atom.z])
+                    b_count += 1
+                elif b.j == atom_idx:
+                    other = self.molecule.atoms[b.i]
+                    avg_vec += np.array([other.x - atom.x, other.y - atom.y, other.z - atom.z])
+                    b_count += 1
+            
+            if b_count > 0:
+                norm = np.linalg.norm(avg_vec)
+                if norm > 1e-4:
+                    base_vec = -avg_vec / norm
+                else:
+                    base_vec = np.array([1.0, 0.0, 0.0])
+            else:
+                base_vec = np.array([1.0, 0.0, 0.0])
+
+            for _ in range(needed - len(current_h_indices)):
+                h_idx = len(self.molecule.atoms)
+                rand_dir = np.random.randn(3)
+                if np.linalg.norm(rand_dir) > 1e-4:
+                    rand_dir /= np.linalg.norm(rand_dir)
+                else:
+                    rand_dir = np.array([1.0, 0.0, 0.0])
+                
+                if b_count > 0:
+                    # Keep it on the outward hemisphere
+                    if np.dot(rand_dir, base_vec) < 0:
+                        rand_dir = -rand_dir
+                    # Bias it slightly toward the exact outward vector
+                    rand_dir = rand_dir + base_vec * 0.8
+                    rand_dir /= np.linalg.norm(rand_dir)
+
+                # 1.2 A distance to clear the carbon core
+                off = rand_dir * 1.2
+                self.molecule.atoms.append(Atom("H", atom.x + off[0], atom.y + off[1], atom.z + off[2]))
+                self.molecule.bonds.append(Bond(atom_idx, h_idx))
+
+    def _get_non_h_indices(self) -> List[int]:
+        if not self.molecule: return []
+        return [i for i, a in enumerate(self.molecule.atoms) if a.element != "H"]
 
     def wheelEvent(self, event):
         if self.molecule is None:
@@ -1047,7 +1224,8 @@ class MainWindow(QMainWindow):
         self._anim_phase = 0.0
         
         # FF Parameters
-        self._ff_steps = 150
+        self._ff_max_steps = 10000
+        self._ff_tol = 0.02
         self._ff_k_bond = 8.0
         self._ff_k_rep = 1.5
 
@@ -1209,6 +1387,12 @@ class MainWindow(QMainWindow):
         self._elem_combo.setCurrentText("C")
         self._elem_combo.currentTextChanged.connect(self._on_build_elem_change)
         self._build_toolbar_obj.addWidget(self._elem_combo)
+
+        self._build_toolbar_obj.addSeparator()
+        self._auto_h_check = QCheckBox("Auto adjust H")
+        self._auto_h_check.setChecked(False)
+        self._auto_h_check.toggled.connect(self._on_auto_h_toggle)
+        self._build_toolbar_obj.addWidget(self._auto_h_check)
 
         act_clear = QAction("Clear All", self)
         act_clear.triggered.connect(self._clear_molecule)
@@ -1751,6 +1935,9 @@ class MainWindow(QMainWindow):
     def _on_build_elem_change(self, elem: str):
         self._canvas.build_element = elem
 
+    def _on_auto_h_toggle(self, checked: bool):
+        self._canvas.auto_adjust_h = checked
+
     def _clear_molecule(self):
         if QMessageBox.question(self, "Clear", "Clear the entire molecule?") == QMessageBox.StandardButton.Yes:
             self._save_history()
@@ -1764,15 +1951,16 @@ class MainWindow(QMainWindow):
         
         # Apply the simple spring-repulsion force field with user params
         self._save_history()
-        optimize_geometry(
+        steps_taken = optimize_geometry(
             self._canvas.molecule, 
-            steps=self._ff_steps, 
+            max_steps=self._ff_max_steps, 
+            tol=self._ff_tol,
             k_bond=self._ff_k_bond, 
             k_rep=self._ff_k_rep
         )
         self._canvas.request_render()
         self._update_info_panel(self._canvas.molecule)
-        self._status.showMessage(f"Geometry optimized ({self._ff_steps} steps).", 3000)
+        self._status.showMessage(f"Geometry optimized in {steps_taken} steps (tol {self._ff_tol}).", 3000)
 
     def _on_structure_changed(self):
         # UI updates only; history should be saved BEFORE the change occurs
@@ -1835,9 +2023,16 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         
         s_steps = QSpinBox()
-        s_steps.setRange(10, 2000)
-        s_steps.setValue(self._ff_steps)
-        form.addRow("Steps:", s_steps)
+        s_steps.setRange(10, 100000)
+        s_steps.setValue(self._ff_max_steps)
+        form.addRow("Max Steps:", s_steps)
+        
+        s_tol = QDoubleSpinBox()
+        s_tol.setRange(0.001, 1.0)
+        s_tol.setSingleStep(0.005)
+        s_tol.setDecimals(3)
+        s_tol.setValue(self._ff_tol)
+        form.addRow("Convergence Tol:", s_tol)
         
         s_kb = QDoubleSpinBox()
         s_kb.setRange(0.1, 100.0)
@@ -1857,7 +2052,8 @@ class MainWindow(QMainWindow):
         l.addWidget(btns)
         
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._ff_steps = s_steps.value()
+            self._ff_max_steps = s_steps.value()
+            self._ff_tol = s_tol.value()
             self._ff_k_bond = s_kb.value()
             self._ff_k_rep = s_kr.value()
             self._clean_molecule()

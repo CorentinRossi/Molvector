@@ -590,71 +590,172 @@ def center_positions(atoms: List[Atom]) -> np.ndarray:
     pos = np.array([a.pos for a in atoms])
     return pos - pos.mean(axis=0)
 
-def optimize_geometry(mol: Molecule, steps: int = 150, k_bond: float = 8.0, k_rep: float = 1.5):
+def optimize_geometry(mol: Molecule, max_steps: int = 10000, tol: float = 0.02, k_bond: float = 100.0, k_rep: float = 1.0, fixed_indices: List[int] = None):
     """
-    Apply a simple force-directed layout (spring-electric) to 'clean' 
-    the molecular geometry.
+    Molecular Mechanics (MM) force field optimization to 'clean' geometry.
+    Implements a classic Potential Energy Surface (PES) model:
+    E_total = E_bond + E_angle (Urey-Bradley) + E_vdw (Lennard-Jones 12-6 Repulsion)
     """
     if not mol.atoms: return
     
-    # 1. Prepare positions
+    # 1. Setup system parameters
     pos = np.array([a.pos for a in mol.atoms], dtype=np.float64)
     n = len(pos)
     if n < 2: return
     
-    # 2. Calculate ideal bond lengths
-    # Using VDW_RADII as a proxy for covalent radii
+    # Precompute adjacency and bond parameters
+    adj = [set() for _ in range(n)]
     bond_params = []
     for b in mol.bonds:
-        r1 = VDW_RADII.get(mol.atoms[b.i].element, 0.8)
-        r2 = VDW_RADII.get(mol.atoms[b.j].element, 0.8)
-        ideal = (r1 + r2) * (0.95 if b.order > 1 else 1.0)
-        if b.order == 3: ideal *= 0.9
+        r1 = COVALENT_RADII.get(mol.atoms[b.i].element, 0.7)
+        r2 = COVALENT_RADII.get(mol.atoms[b.j].element, 0.7)
+        # Bond order adjustment: double/triple bonds are shorter
+        order_scale = 1.0
+        if b.order == 2: order_scale = 0.92
+        elif b.order == 3: order_scale = 0.88
+        elif b.order == 1.5: order_scale = 0.95 # Aromatic
+        
+        ideal = (r1 + r2) * order_scale
         bond_params.append((b.i, b.j, ideal))
+        adj[b.i].add(b.j)
+        adj[b.j].add(b.i)
 
-    # 3. Simple Iterative Relaxation (Gradient Descent with Momentum)
+    # 2. Initial State Preparation
+    # Small jitter to break perfect symmetry without large perturbation
+    jitter_scale = 0.02 if fixed_indices else 0.05
+    jitter = np.random.normal(0, jitter_scale, pos.shape)
+    if fixed_indices:
+        for idx in fixed_indices: jitter[idx] = 0
+    pos += jitter
+
     vel = np.zeros_like(pos)
-    dt = 0.05
-    damping = 0.85
-    
-    for _ in range(steps):
+    dt = 0.01         # small step for stability
+    damping = 0.70    # strong damping to prevent overshoot/oscillation
+
+    # Pre-calculate VDW exclusion matrix and sum of radii
+    vdw_scale = np.ones((n, n), dtype=np.float64)
+    np.fill_diagonal(vdw_scale, 0.0) # 1-1
+    for i in range(n):
+        for j in adj[i]:
+            vdw_scale[i, j] = 0.0 # 1-2
+        for nb in adj[i]:
+            for j in adj[nb]:
+                if i != j and j not in adj[i]:
+                    # 1-3
+                    if mol.atoms[i].element == "H" and mol.atoms[j].element == "H":
+                        vdw_scale[i, j] = 0.25
+                    else:
+                        vdw_scale[i, j] = 0.0
+            for nbnb in adj[nb]:
+                for j in adj[nbnb]:
+                    if i != j and j not in adj[i] and j not in adj[nb]:
+                        # 1-4
+                        vdw_scale[i, j] = 0.5
+
+    radii = np.array([VDW_RADII.get(a.element, 0.8) for a in mol.atoms])
+    vdw_r_sum = radii[:, np.newaxis] + radii[np.newaxis, :]
+
+    # Pre-calculate angle parameters
+    angle_params = []
+    for center in range(n):
+        nbs = list(adj[center])
+        num_nbs = len(nbs)
+        if num_nbs < 2: continue
+        
+        if num_nbs == 4:   theta0 = math.radians(109.47)
+        elif num_nbs == 3: theta0 = math.radians(120.0)
+        else:              theta0 = math.radians(180.0)
+        
+        for idx_a in range(num_nbs):
+            for idx_b in range(idx_a + 1, num_nbs):
+                angle_params.append((center, nbs[idx_a], nbs[idx_b], theta0))
+
+    # 3. Main Optimization Loop (Gradient Descent with Momentum)
+    for step in range(max_steps):
         forces = np.zeros_like(pos)
         
-        # Bond Springs
+        # --- A. Bond Potential (Harmonic) ---
+        # F = -k * (r - r0)
         for i, j, r0 in bond_params:
             diff = pos[i] - pos[j]
             dist = np.linalg.norm(diff)
-            if dist < 1e-4: 
-                # Avoid singularity: push apart randomly
-                forces[i] += np.random.normal(0, 0.1, 3)
-                continue
-            
+            if dist < 1e-4: dist = 0.1
             f_mag = -k_bond * (dist - r0)
             f_vec = (diff / dist) * f_mag
             forces[i] += f_vec
             forces[j] -= f_vec
             
-        # Non-bonded Repulsion (Van der Waals overlaps)
-        for i in range(n):
-            for j in range(i + 1, n):
-                diff = pos[i] - pos[j]
-                dist = np.linalg.norm(diff)
-                if dist < 1e-4: dist = 0.1
-                
-                # We want atoms to be at least r_sum apart
-                r_sum = VDW_RADII.get(mol.atoms[i].element, 0.8) + VDW_RADII.get(mol.atoms[j].element, 0.8)
-                if dist < r_sum * 1.8:
-                    f_mag = k_rep * (r_sum / (dist + 0.1))**4
-                    forces[i] += (diff / dist) * f_mag
-                    forces[j] -= (diff / dist) * f_mag
+        # --- B. Angle Potential (Proper Harmonic) ---
+        for c, ni, nj, theta0 in angle_params:
+            b1 = pos[ni] - pos[c]
+            b2 = pos[nj] - pos[c]
+            
+            len1 = np.linalg.norm(b1)
+            len2 = np.linalg.norm(b2)
+            if len1 < 1e-6 or len2 < 1e-6: continue
+            
+            b1n = b1 / len1
+            b2n = b2 / len2
+            
+            cos_t = np.clip(np.dot(b1n, b2n), -1.0, 1.0)
+            theta = math.acos(cos_t)
+            sin_t = math.sqrt(max(1.0 - cos_t**2, 1e-8))
+            
+            dtheta = theta - theta0
+            prefactor = k_bond * dtheta  # k_angle * 2.0 = k_bond * 0.5 * 2.0 = k_bond
+            
+            grad_ni = (b2n - cos_t * b1n) / (sin_t * len1)
+            grad_nj = (b1n - cos_t * b2n) / (sin_t * len2)
+            
+            forces[ni] += prefactor * grad_ni
+            forces[nj] += prefactor * grad_nj
+            forces[c]  -= prefactor * (grad_ni + grad_nj)
 
-        # Update
+        # --- C. Non-bonded Potential (Lennard-Jones Repulsion) ---
+        diff = pos[:, np.newaxis, :] - pos[np.newaxis, :, :]
+        dist = np.linalg.norm(diff, axis=-1)
+        np.fill_diagonal(dist, 1.0) # Prevent division by zero
+        
+        # Soft repulsion
+        dist = np.maximum(dist, 0.3)
+        ratio = vdw_r_sum / dist
+        f_mag = k_rep * 3.0 * (ratio**6) * vdw_scale
+        
+        # diff[i, j] = pos[i] - pos[j], direction is away from j
+        f_vec = diff * (f_mag / dist)[..., np.newaxis]
+        
+        # Clip individual pair forces
+        f_v_norm = np.linalg.norm(f_vec, axis=-1)
+        clip_mask = f_v_norm > 50.0
+        f_vec[clip_mask] = (f_vec[clip_mask] / f_v_norm[clip_mask][..., np.newaxis]) * 50.0
+        
+        forces += np.sum(f_vec, axis=1)
+
+
+        # --- D. Update and Convergence ---
+        # Per-atom displacement cap: no atom moves more than 0.2 Å per step
+        max_disp = 0.2 / dt
+        f_norms = np.linalg.norm(forces, axis=1)
+        mask = f_norms > max_disp
+        if np.any(mask):
+            scale_arr = np.where(mask, max_disp / np.maximum(f_norms, 1e-10), 1.0)
+            forces *= scale_arr[:, np.newaxis]
+
+        if fixed_indices:
+            for idx in fixed_indices:
+                forces[idx] = 0
+                vel[idx] = 0
+
         vel = (vel + forces * dt) * damping
         pos += vel * dt
-        
-    # 4. Write back
-    for i, a in enumerate(mol.atoms):
-        a.x, a.y, a.z = pos[i]
+
+        if np.max(np.linalg.norm(forces, axis=1)) < tol:
+            break
+
+    # 4. Final Write Back
+    for i, atom in enumerate(mol.atoms):
+        atom.x, atom.y, atom.z = pos[i]
+    return step + 1
 
 def bond_half_line(
     ax:float, ay:float, bx:float, by:float,
@@ -772,6 +873,10 @@ def render_avogadro(
         z_factor = CAMERA_Z / (CAMERA_Z - rp[2]) if (CAMERA_Z - rp[2]) != 0 else 1.0
         
         r_px = vdw * scale * atom_scale * z_factor
+        # Safety clipping
+        r_px = max(0.1, min(1000.0, r_px))
+        if not math.isfinite(r_px): r_px = 10.0
+        
         px_coord = cx + rp[0] * scale * z_factor
         py_coord = cy - rp[1] * scale * z_factor
         
@@ -866,7 +971,9 @@ def render_avogadro(
             bx, by, bz = cx + rpB[0]*scale*zB_factor, cy - rpB[1]*scale*zB_factor, rpB[2]
             
             avg_z_factor = (zA_factor + zB_factor) / 2.0
-            indiv_hw_px = indiv_hw_angstrom * scale * avg_z_factor
+            # Safety: Ensure width is positive and finite
+            indiv_hw_px = max(0.1, min(100.0, indiv_hw_angstrom * scale * avg_z_factor))
+            if not math.isfinite(indiv_hw_px): indiv_hw_px = 1.0
             
             for (ox,oy,oz),(tx,ty,tz),col_e,is_first in [
                 ((ax,ay,az),(bx,by,bz), mol.atoms[ai].element, True),
