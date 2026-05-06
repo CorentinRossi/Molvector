@@ -135,6 +135,9 @@ def parse_xyz(text: str, name: str = "molecule") -> Molecule:
         if len(p) >= 4:
             atoms.append(Atom(p[0], float(p[1]), float(p[2]), float(p[3])))
     
+    if not atoms:
+        raise ValueError("No valid atoms found in XYZ.")
+        
     mol = Molecule(name=name, atoms=atoms, charge=charge)
     mol.name = chemical_formula(mol)
     return mol
@@ -255,6 +258,9 @@ def parse_gaussian(text: str) -> Molecule:
                 except ValueError:
                     pass
     
+    if not mol.atoms:
+        raise ValueError("No valid atoms found in Gaussian input.")
+
     # Override name with formula for consistency
     mol.name = chemical_formula(mol)
     return mol

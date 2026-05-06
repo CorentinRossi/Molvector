@@ -1562,33 +1562,33 @@ class MainWindow(QMainWindow):
     def _load_mol_from_path(self, path: str):
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
-        ext  = os.path.splitext(path)[1].lower()
         base = os.path.basename(path)
+        name = os.path.splitext(base)[0]
 
-        if ext == ".xyz":
-            mol = parse_xyz(text, name=os.path.splitext(base)[0])
-            src = "XYZ"
-        elif ext in (".gjf", ".com"):
-            mol = parse_gaussian(text)
-            src = "Gaussian input"
-        elif ext in (".log", ".out"):
-            mol = parse_gaussian_log(text)
-            src = "Gaussian log (last geometry)"
-        elif ext == ".pdb":
-            mol = parse_pdb(text, name=os.path.splitext(base)[0])
-            src = "PDB"
-        else:
-            # Try XYZ first, then Gaussian input
+        mol = None
+        src = ""
+        errors = []
+
+        # Try all parsers regardless of file extension
+        parsers = [
+            ("Gaussian log", lambda t: parse_gaussian_log(t)),
+            ("XYZ", lambda t: parse_xyz(t, name=name)),
+            ("PDB", lambda t: parse_pdb(t, name=name)),
+            ("Gaussian input", lambda t: parse_gaussian(t))
+        ]
+
+        for source_name, parser in parsers:
             try:
-                mol = parse_xyz(text, name=base)
-                src = "XYZ (auto)"
-            except Exception:
-                try:
-                    mol = parse_pdb(text, name=base)
-                    src = "PDB (auto)"
-                except Exception:
-                    mol = parse_gaussian(text)
-                    src = "Gaussian input (auto)"
+                mol = parser(text)
+                if mol and mol.atoms:
+                    src = source_name
+                    break
+            except Exception as e:
+                errors.append(f"{source_name}: {e}")
+
+        if mol is None or not mol.atoms:
+            err_msg = "\n".join(errors)
+            raise ValueError(f"Could not parse file format.\nAttempts:\n{err_msg}")
 
         infer_bonds(mol)
         return mol, src
@@ -1782,13 +1782,14 @@ class MainWindow(QMainWindow):
             f"{status_path}{display_name}  |  {len(mol.atoms)} atoms, "
             f"{len(mol.bonds)} bonds  |  {mass:.3f} uma  [{src}]"
         )
+        self._legend.update_for(mol, self._color_overrides)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Molecule File", "",
-            "All supported (*.xyz *.gjf *.com *.log *.out *.pdb);;"
+            "All supported (*.xyz *.gjf *.com *.log *.out *.pdb *.txt);;"
             "XYZ (*.xyz);;Gaussian input (*.gjf *.com);;"
-            "Gaussian log (*.log *.out);;PDB (*.pdb);;All files (*)"
+            "Gaussian log (*.log *.out);;PDB (*.pdb);;Text (*.txt);;All files (*)"
         )
         if path:
             self._load_and_display(path)
