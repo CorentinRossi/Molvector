@@ -18,7 +18,7 @@ Dependencies:
     pip install PyQt6 numpy svgwrite
 """
 
-import sys, os, math, tempfile
+import sys, os, math, tempfile, platform
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 
@@ -53,6 +53,23 @@ from molvector_avogadro import (
     save_xyz, save_gaussian_input, save_pdb, project_molecule, Atom, Bond,
     optimize_geometry,
 )
+
+def load_app_icon():
+    icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+    if not os.path.isfile(icon_path):
+        return QIcon()
+    sizes = [16, 32, 48, 64, 128, 256]
+    icon = QIcon()
+    renderer = QSvgRenderer(icon_path)
+    for s in sizes:
+        pix = QPixmap(s, s)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+        icon.addPixmap(pix)
+    return icon
+
 
 def get_safe_filename(name: str) -> str:
     """C60+ -> C60p, removes special characters."""
@@ -2212,7 +2229,18 @@ def main():
     app.setApplicationName("Molvector")
     app.setFont(QFont("Segoe UI", 10))
 
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Molvector")
+        except Exception:
+            pass
+
+    app_icon = load_app_icon()
+    app.setWindowIcon(app_icon)
+
     win = MainWindow()
+    win.setWindowIcon(app_icon)
     win.show()
 
     # Optional: open file from command line
