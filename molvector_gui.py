@@ -100,7 +100,15 @@ ELEM_FULL_NAME = {
     "Lu":"Lutetium", "Hf":"Hafnium",  "Ta":"Tantalum", "W":"Tungsten",  "Re":"Rhenium",
     "Os":"Osmium",   "Ir":"Iridium",  "Pt":"Platinum", "Au":"Gold",     "Hg":"Mercury",
     "Tl":"Thallium", "Pb":"Lead",     "Bi":"Bismuth",  "Po":"Polonium", "At":"Astatine",
-    "Rn":"Radon",
+    "Rn":"Radon",    "Fr":"Francium", "Ra":"Radium",
+    "Ac":"Actinium","Th":"Thorium",  "Pa":"Protactinium","U":"Uranium",
+    "Np":"Neptunium","Pu":"Plutonium","Am":"Americium","Cm":"Curium",
+    "Bk":"Berkelium","Cf":"Californium","Es":"Einsteinium","Fm":"Fermium",
+    "Md":"Mendelevium","No":"Nobelium","Lr":"Lawrencium",
+    "Rf":"Rutherfordium","Db":"Dubnium","Sg":"Seaborgium","Bh":"Bohrium",
+    "Hs":"Hassium","Mt":"Meitnerium","Ds":"Darmstadtium","Rg":"Roentgenium",
+    "Cn":"Copernicium","Nh":"Nihonium","Fl":"Flerovium","Mc":"Moscovium",
+    "Lv":"Livermorium","Ts":"Tennessine","Og":"Oganesson",
 }
 
 # Theme Colors
@@ -708,6 +716,178 @@ class LegendPanel(QGroupBox):
             self.elementColorChanged.emit(elem, new_hex)
 
         self._layout.addStretch()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PERIODIC TABLE DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PERIODIC_TABLE_LAYOUT = [
+    # (symbol, Z, row, col)
+    ("H",1,0,0), ("He",2,0,17),
+    ("Li",3,1,0), ("Be",4,1,1), ("B",5,1,12), ("C",6,1,13), ("N",7,1,14), ("O",8,1,15), ("F",9,1,16), ("Ne",10,1,17),
+    ("Na",11,2,0), ("Mg",12,2,1), ("Al",13,2,12), ("Si",14,2,13), ("P",15,2,14), ("S",16,2,15), ("Cl",17,2,16), ("Ar",18,2,17),
+    ("K",19,3,0), ("Ca",20,3,1), ("Sc",21,3,2), ("Ti",22,3,3), ("V",23,3,4), ("Cr",24,3,5), ("Mn",25,3,6), ("Fe",26,3,7), ("Co",27,3,8), ("Ni",28,3,9), ("Cu",29,3,10), ("Zn",30,3,11), ("Ga",31,3,12), ("Ge",32,3,13), ("As",33,3,14), ("Se",34,3,15), ("Br",35,3,16), ("Kr",36,3,17),
+    ("Rb",37,4,0), ("Sr",38,4,1), ("Y",39,4,2), ("Zr",40,4,3), ("Nb",41,4,4), ("Mo",42,4,5), ("Tc",43,4,6), ("Ru",44,4,7), ("Rh",45,4,8), ("Pd",46,4,9), ("Ag",47,4,10), ("Cd",48,4,11), ("In",49,4,12), ("Sn",50,4,13), ("Sb",51,4,14), ("Te",52,4,15), ("I",53,4,16), ("Xe",54,4,17),
+    ("Cs",55,5,0), ("Ba",56,5,1), ("La",57,5,2), ("Hf",72,5,3), ("Ta",73,5,4), ("W",74,5,5), ("Re",75,5,6), ("Os",76,5,7), ("Ir",77,5,8), ("Pt",78,5,9), ("Au",79,5,10), ("Hg",80,5,11), ("Tl",81,5,12), ("Pb",82,5,13), ("Bi",83,5,14), ("Po",84,5,15), ("At",85,5,16), ("Rn",86,5,17),
+    ("Fr",87,6,0), ("Ra",88,6,1), ("Ac",89,6,2), ("Rf",104,6,3), ("Db",105,6,4), ("Sg",106,6,5), ("Bh",107,6,6), ("Hs",108,6,7), ("Mt",109,6,8), ("Ds",110,6,9), ("Rg",111,6,10), ("Cn",112,6,11), ("Nh",113,6,12), ("Fl",114,6,13), ("Mc",115,6,14), ("Lv",116,6,15), ("Ts",117,6,16), ("Og",118,6,17),
+    # F-block: lanthanides
+    ("Ce",58,7,2), ("Pr",59,7,3), ("Nd",60,7,4), ("Pm",61,7,5), ("Sm",62,7,6), ("Eu",63,7,7), ("Gd",64,7,8), ("Tb",65,7,9), ("Dy",66,7,10), ("Ho",67,7,11), ("Er",68,7,12), ("Tm",69,7,13), ("Yb",70,7,14), ("Lu",71,7,15),
+    # F-block: actinides
+    ("Th",90,8,2), ("Pa",91,8,3), ("U",92,8,4), ("Np",93,8,5), ("Pu",94,8,6), ("Am",95,8,7), ("Cm",96,8,8), ("Bk",97,8,9), ("Cf",98,8,10), ("Es",99,8,11), ("Fm",100,8,12), ("Md",101,8,13), ("No",102,8,14), ("Lr",103,8,15),
+]
+
+_ELEM_CATEGORY_COLORS = {
+    "nonmetal":       "#4CAF50",
+    "noble_gas":      "#9C27B0",
+    "alkali_metal":   "#FF5722",
+    "alkaline_earth": "#FF9800",
+    "metalloid":      "#00BCD4",
+    "halogen":        "#1E88E5",
+    "transition":     "#42A5F5",
+    "post_transition":"#78909C",
+    "lanthanide":     "#E91E63",
+    "actinide":       "#D32F2F",
+    "unknown":        "#757575",
+}
+
+def _element_category(sym: str, Z: int) -> str:
+    if Z == 1: return "nonmetal"
+    if Z == 2: return "noble_gas"
+    if 3 <= Z <= 4: return "alkali_metal" if Z == 3 else "alkaline_earth"
+    if 5 <= Z <= 10:
+        if Z == 5: return "metalloid"
+        return "nonmetal" if Z in (6,7,8) else "halogen" if Z in (9,17,35,53,85,117) else "noble_gas"
+    if 11 <= Z <= 18:
+        if Z == 11: return "alkali_metal"
+        if Z == 12: return "alkaline_earth"
+        if Z in (13,): return "post_transition"
+        if Z in (14,): return "metalloid"
+        if Z in (15,16): return "nonmetal"
+        if Z == 17: return "halogen"
+        if Z == 18: return "noble_gas"
+    if 19 <= Z <= 36:
+        if Z in (19,37,55,87): return "alkali_metal"
+        if Z in (20,38,56,88): return "alkaline_earth"
+        if 21 <= Z <= 30: return "transition"
+        if 31 <= Z <= 36:
+            if Z == 31: return "post_transition"
+            if Z in (32,): return "metalloid"
+            if Z in (33,34): return "metalloid" if Z == 33 else "nonmetal"
+            return "halogen" if Z == 35 else "noble_gas"
+    if 37 <= Z <= 54:
+        if Z in (37,55,87): return "alkali_metal"
+        if Z in (38,56,88): return "alkaline_earth"
+        if Z == 39 or (40 <= Z <= 48):
+            return "transition"
+        if 49 <= Z <= 54:
+            if Z == 49: return "post_transition"
+            if Z == 50: return "post_transition"
+            if Z == 51: return "metalloid"
+            if Z == 52: return "metalloid"
+            return "halogen" if Z == 53 else "noble_gas"
+    if 55 <= Z <= 86:
+        if Z in (55,87): return "alkali_metal"
+        if Z in (56,88): return "alkaline_earth"
+        if 57 <= Z <= 71: return "lanthanide"
+        if 72 <= Z <= 80: return "transition"
+        if 81 <= Z <= 86:
+            if Z == 81: return "post_transition"
+            if Z in (82,83): return "post_transition"
+            if Z in (84,): return "post_transition"
+            return "halogen" if Z == 85 else "noble_gas"
+    if 89 <= Z <= 103: return "actinide"
+    if 104 <= Z <= 111: return "transition"
+    if 112 <= Z <= 118:
+        if Z in (113,114,115,116): return "post_transition"
+        if Z == 117: return "halogen"
+        if Z == 118: return "noble_gas"
+    return "unknown"
+
+
+class PeriodicTableDialog(QDialog):
+    elementSelected = pyqtSignal(str)
+
+    def __init__(self, parent=None, current_element: str = "C"):
+        super().__init__(parent)
+        self.setWindowTitle("Select Element — Periodic Table")
+        self.setModal(True)
+        self.setMinimumSize(1020, 640)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+
+        grid = QGridLayout()
+        grid.setSpacing(3)
+
+        btn_size = 52
+        btn_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+
+        by_Z = {}
+        for sym, Z, r, c in _PERIODIC_TABLE_LAYOUT:
+            by_Z[Z] = (sym, r, c)
+
+        self._all_buttons: Dict[str, QPushButton] = {}
+
+        for sym, Z, r, c in _PERIODIC_TABLE_LAYOUT:
+            btn = QPushButton(sym)
+            btn.setFixedSize(btn_size, btn_size)
+            btn.setFont(btn_font)
+            tooltip = f"{sym} ({Z}) — {ELEM_FULL_NAME.get(sym, 'Unknown')}"
+            btn.setToolTip(tooltip)
+
+            cat = _element_category(sym, Z)
+            bg = _ELEM_CATEGORY_COLORS.get(cat, "#757575")
+            is_dark = sum(int(bg[i:i+2],16) for i in (1,3,5)) < 400
+            text_color = "#ffffff" if is_dark else "#000000"
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{bg}; color:{text_color}; "
+                f"border:1px solid rgba(0,0,0,0.2); border-radius:4px; }}"
+                f"QPushButton:hover {{ border:2px solid white; }}"
+            )
+
+            is_current = (sym == current_element)
+            if is_current:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background:{bg}; color:{text_color}; "
+                    f"border:2px solid #FFD700; border-radius:4px; }}"
+                )
+
+            def _make_handler(s):
+                return lambda checked, sym=s: self._select_element(sym)
+
+            btn.clicked.connect(_make_handler(sym))
+            grid.addWidget(btn, r, c)
+            self._all_buttons[sym] = btn
+
+        # Headers for characteristic rows
+        label_font = QFont("Segoe UI", 8)
+        lbl_la = QLabel("Lanthanides")
+        lbl_la.setFont(label_font)
+        lbl_la.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(lbl_la, 7, 0, 1, 2)
+
+        lbl_ac = QLabel("Actinides")
+        lbl_ac.setFont(label_font)
+        lbl_ac.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(lbl_ac, 8, 0, 1, 2)
+
+        layout.addLayout(grid)
+
+        # Close button
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("Cancel")
+        close_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+    def _select_element(self, sym: str):
+        self.elementSelected.emit(sym)
+        self.accept()
+
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1434,7 +1614,10 @@ class MainWindow(QMainWindow):
         self._build_toolbar_obj.addSeparator()
         self._build_toolbar_obj.addWidget(QLabel(" Element: "))
         self._elem_combo = QComboBox()
-        self._elem_combo.addItems(["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"])
+        self._elem_combo.setMinimumContentsLength(4)
+        self._elem_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._common_elements = ["H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
+        self._elem_combo.addItems(self._common_elements + ["Others…"])
         self._elem_combo.setCurrentText("C")
         self._elem_combo.currentTextChanged.connect(self._on_build_elem_change)
         self._build_toolbar_obj.addWidget(self._elem_combo)
@@ -1989,7 +2172,21 @@ class MainWindow(QMainWindow):
             self._canvas.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
 
     def _on_build_elem_change(self, elem: str):
+        if elem == "Others…":
+            prev = self._canvas.build_element
+            dlg = PeriodicTableDialog(self, prev)
+            dlg.elementSelected.connect(self._on_pick_from_periodic_table)
+            if not dlg.exec():
+                self._elem_combo.setCurrentText(prev)
+            return
         self._canvas.build_element = elem
+
+    def _on_pick_from_periodic_table(self, sym: str):
+        idx = self._elem_combo.findText(sym)
+        if idx < 0:
+            others_idx = self._elem_combo.findText("Others…")
+            self._elem_combo.insertItem(others_idx, sym)
+        self._elem_combo.setCurrentText(sym)
 
     def _on_auto_h_toggle(self, checked: bool):
         self._canvas.auto_adjust_h = checked
