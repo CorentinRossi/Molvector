@@ -32,16 +32,35 @@ from typing import List, Dict, Optional, Tuple
 try:
     import openbabel
     _OB_PKG_DIR = os.path.dirname(openbabel.__file__)
-    # Check several possible data directory locations
-    _OB_CANDIDATES = [
+    _OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
+
+    _OB_CANDIDATES = []
+    # 1. Environment variable takes precedence
+    _ENV_DATADIR = os.environ.get('BABEL_DATADIR')
+    if _ENV_DATADIR:
+        _OB_CANDIDATES.append(_ENV_DATADIR)
+    # 2. Data bundled within the Python package (pip install openbabel-wheel)
+    for ver in _OB_VERSIONS:
+        _OB_CANDIDATES.append(os.path.join(_OB_PKG_DIR, 'share', 'openbabel', ver))
+    _OB_CANDIDATES += [
         os.path.join(_OB_PKG_DIR, 'bin', 'data'),
-        os.path.join(_OB_PKG_DIR, 'share', 'openbabel', '3.1.0'),
-        os.path.join(_OB_PKG_DIR, 'share', 'openbabel', '3.0.0'),
         os.path.join(_OB_PKG_DIR, 'data'),
     ]
+    # 3. Walk up from package directory to find share/openbabel under the
+    #    install prefix (catches Homebrew, Conda, Linux distro installs)
+    _OB_PARENT = _OB_PKG_DIR
+    for _ in range(6):
+        _OB_PARENT = os.path.dirname(_OB_PARENT)
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
+    # 4. Common absolute paths (Homebrew, Linux system)
+    for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
+
     _OB_DATA_DIR = None
     for d in _OB_CANDIDATES:
-        if os.path.isfile(os.path.join(d, 'UFF.prm')):
+        if d and os.path.isfile(os.path.join(d, 'UFF.prm')):
             _OB_DATA_DIR = d
             break
     if _OB_DATA_DIR and not os.environ.get('BABEL_DATADIR'):
