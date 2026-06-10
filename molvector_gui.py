@@ -51,7 +51,7 @@ from molvector_avogadro import (
     lighten, darken, hex_to_rgb, rgb_to_hex, auto_dark,
     chemical_formula, molecular_mass, VibrationalMode, ExcitedState,
     save_xyz, save_gaussian_input, save_pdb, project_molecule, Atom, Bond,
-    optimize_geometry,
+    optimize_geometry, HAS_OPENBABEL,
 )
 
 def load_app_icon():
@@ -2263,7 +2263,17 @@ class MainWindow(QMainWindow):
     def _clean_molecule(self):
         if not self._canvas.molecule or not self._canvas.molecule.atoms:
             return
-        
+
+        if not HAS_OPENBABEL:
+            QMessageBox.warning(
+                self, "OpenBabel Not Found",
+                "Geometry optimization requires OpenBabel.\n\n"
+                "Install it with:  pip install openbabel-wheel\n\n"
+                "If already installed, set the BABEL_DATADIR environment "
+                "variable to the folder containing UFF.prm."
+            )
+            return
+
         self._save_history()
         steps_taken = optimize_geometry(
             self._canvas.molecule, 

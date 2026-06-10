@@ -22,7 +22,7 @@ Force Field:
   optimize_geometry(mol, ...) — OpenBabel-backed MMFF94s/UFF geometry optimization
 """
 
-import math, random, string, os
+import math, random, string, os, sys
 import numpy as np
 import svgwrite
 from dataclasses import dataclass, field
@@ -31,10 +31,20 @@ from typing import List, Dict, Optional, Tuple
 # ── OpenBabel data directory setup (cross-platform) ───────────────────────────
 try:
     import openbabel
-    _OB_PKG_DIR = os.path.dirname(openbabel.__file__)
+
+    _IS_WIN = sys.platform == 'win32'
     _OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
 
     _OB_CANDIDATES = []
+
+    # Detect if openbabel is a single-file module (e.g. openbabel.pyd on Windows)
+    # vs. a package (directory with __init__.py).
+    _ob_file = getattr(openbabel, '__file__', None) or ''
+    _OB_PKG_DIR = os.path.dirname(_ob_file)
+    _is_single_module = os.path.isfile(_ob_file) and not os.path.isdir(
+        os.path.join(_OB_PKG_DIR, os.path.splitext(os.path.basename(_ob_file))[0])
+    )
+
     # 1. Environment variable takes precedence
     _ENV_DATADIR = os.environ.get('BABEL_DATADIR')
     if _ENV_DATADIR:
@@ -46,17 +56,47 @@ try:
         os.path.join(_OB_PKG_DIR, 'bin', 'data'),
         os.path.join(_OB_PKG_DIR, 'data'),
     ]
+    # 2b. Single-file .pyd module: data lives in a subdirectory with the same
+    #     basename alongside the module file itself.
+    if _is_single_module:
+        _mod_stem = os.path.splitext(os.path.basename(_ob_file))[0]
+        _mod_dir = os.path.join(_OB_PKG_DIR, _mod_stem)
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(_mod_dir, 'share', 'openbabel', ver))
+        _OB_CANDIDATES += [
+            os.path.join(_mod_dir, 'bin', 'data'),
+            os.path.join(_mod_dir, 'data'),
+        ]
+
     # 3. Walk up from package directory to find share/openbabel under the
-    #    install prefix (catches Homebrew, Conda, Linux distro installs)
+    #    install prefix (catches Homebrew, Conda, Linux distro installs).
+    #    On Windows conda, data lives under Library/share/openbabel/<ver>/.
     _OB_PARENT = _OB_PKG_DIR
     for _ in range(6):
         _OB_PARENT = os.path.dirname(_OB_PARENT)
         for ver in _OB_VERSIONS:
             _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
-    # 4. Common absolute paths (Homebrew, Linux system)
-    for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
-        for ver in _OB_VERSIONS:
-            _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
+            if _IS_WIN:
+                _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'Library', 'share', 'openbabel', ver))
+    # 4. Common absolute paths
+    #    Unix: Homebrew /usr/local /usr
+    #    Windows: Program Files, AppData, ProgramData
+    if _IS_WIN:
+        for pf_var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
+            pf = os.environ.get(pf_var, '')
+            if pf:
+                for ver in _OB_VERSIONS:
+                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', ver, 'data'))
+                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', 'share', 'openbabel', ver))
+        for data_var in ('APPDATA', 'PROGRAMDATA'):
+            d = os.environ.get(data_var, '')
+            if d:
+                for ver in _OB_VERSIONS:
+                    _OB_CANDIDATES.append(os.path.join(d, 'openbabel', ver))
+    else:
+        for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+            for ver in _OB_VERSIONS:
+                _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
 
     _OB_DATA_DIR = None
     for d in _OB_CANDIDATES:
