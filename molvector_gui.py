@@ -54,6 +54,30 @@ from molvector_avogadro import (
     optimize_geometry, HAS_OPENBABEL,
 )
 
+def load_colored_icon(svg_path: str, color: str, size: int = 22) -> QIcon:
+    """Load an SVG file, replace #000000 fills with color, return QIcon."""
+    with open(svg_path, "r", encoding="utf-8") as f:
+        svg_content = f.read()
+    svg_content = svg_content.replace('#000000', color)
+    renderer = QSvgRenderer(QByteArray(svg_content.encode("utf-8")))
+    default_size = renderer.defaultSize()
+    if default_size.isValid() and default_size.width() > 0 and default_size.height() > 0:
+        aspect = default_size.width() / default_size.height()
+        if aspect >= 1.0:
+            w, h = size, int(size / aspect)
+        else:
+            w, h = int(size * aspect), size
+    else:
+        w = h = size
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    x = (size - w) // 2
+    y = (size - h) // 2
+    renderer.render(painter, QRectF(x, y, w, h))
+    painter.end()
+    return QIcon(pix)
+
 def load_app_icon():
     icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
     if not os.path.isfile(icon_path):
@@ -1857,20 +1881,25 @@ class MainWindow(QMainWindow):
     def _setup_builder_toolbar(self):
         assets_dir = os.path.join(os.path.dirname(__file__), "assets")
         self._build_toolbar_obj = QToolBar("Builder")
+        self._build_toolbar_obj.setObjectName("builderToolbar")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._build_toolbar_obj)
         self._build_toolbar_obj.setIconSize(QSize(22, 22))
         self._build_toolbar_obj.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._build_toolbar_obj.setVisible(True)
 
+        icon_color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
+
         # Selection tool
-        self._act_select_btn = QAction(QIcon(os.path.join(assets_dir, "icon_select.svg")), "Selection", self)
+        select_path = os.path.join(assets_dir, "icon_select.svg")
+        self._act_select_btn = QAction(load_colored_icon(select_path, icon_color), "Selection", self)
         self._act_select_btn.setCheckable(True)
         self._act_select_btn.setToolTip("Selection tool — click or drag to select atoms")
         self._act_select_btn.triggered.connect(self._toggle_selection_mode)
         self._build_toolbar_obj.addAction(self._act_select_btn)
 
         # Build tool
-        self._act_build_btn = QAction(QIcon(os.path.join(assets_dir, "icon_draw.svg")), "Build Mode", self)
+        draw_path = os.path.join(assets_dir, "icon_draw.svg")
+        self._act_build_btn = QAction(load_colored_icon(draw_path, icon_color), "Build Mode", self)
         self._act_build_btn.setCheckable(True)
         self._act_build_btn.setToolTip("Build mode — add / bond atoms")
         self._act_build_btn.triggered.connect(self._toggle_build_mode)
@@ -1922,7 +1951,7 @@ class MainWindow(QMainWindow):
         tb_action("Open",      self._open_file, "Ctrl+O", "Open molecule file")
         tb_action("Save SVG",  self._save_svg,  "Ctrl+S", "Export current view as SVG")
         tb.addSeparator()
-        tb_action("Reset",     lambda: self._canvas.reset_view(), "Ctrl+R")
+        tb_action("Reset",     lambda: self._canvas.reset_view())
         tb.addSeparator()
 
         # Zoom readout
@@ -2235,9 +2264,20 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_act_theme"):
             self._act_theme.setText("Switch to Dark Mode" if theme_name == "light" else "Switch to Light Mode")
             
+        # Update toolbar icon colors
+        self._update_tool_icons()
+
         self.setProperty("theme", theme_name)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def _update_tool_icons(self):
+        if not hasattr(self, '_act_select_btn') or not hasattr(self, '_act_build_btn'):
+            return
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
+        self._act_select_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_select.svg"), color))
+        self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
 
     def _update_info_panel(self, mol):
         """Populate sidebar labels and status bar for a loaded molecule."""

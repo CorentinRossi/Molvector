@@ -2,9 +2,9 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="26.421896mm"
+   width="33.766289mm"
    height="31.616709mm"
-   viewBox="0 0 26.421895 31.616709"
+   viewBox="0 0 33.766288 31.616709"
    version="1.1"
    id="svg1"
    sodipodi:docname="icon_select.svg"
@@ -24,9 +24,9 @@
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
      showguides="true"
-     inkscape:zoom="4.1776836"
-     inkscape:cx="80.068294"
-     inkscape:cy="82.461965"
+     inkscape:zoom="2.0888418"
+     inkscape:cx="62.953547"
+     inkscape:cy="111.3057"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -39,7 +39,7 @@
      inkscape:label="Calque 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(0.59807855,-18.051422)">
+     transform="translate(4.3022451,-17.522253)">
     <path
        d="m 6.8506493,21.562073 -0.014989,20.328104 5.3346407,-2.174369 2.612805,6.3995 3.414933,-1.394258 -2.612158,-6.397915 5.334641,-2.174369 z"
        style="fill:#000000;stroke-width:3.599"
@@ -47,10 +47,10 @@
     <rect
        style="fill:none;stroke:none;stroke-width:3.59899"
        id="rect5"
-       width="26.421896"
+       width="33.766289"
        height="31.616709"
-       x="-0.59807855"
-       y="18.051422"
+       x="-4.3022451"
+       y="17.522253"
        rx="0" />
   </g>
 </svg>
