@@ -119,7 +119,7 @@ THEMES = {
         "CARD_BG":  "#13131f",
         "BORDER":   "#2a2a44",
         "FG":       "#ccd6f6",
-        "FG_DIM":   "#8899bb",
+        "FG_DIM":   "#99aacc",
         "ACCENT":   "#4488cc",
         "CANVAS":   "#0a0a12"
     },
@@ -192,9 +192,27 @@ def get_stylesheet(theme_name: str) -> str:
         width:14px; height:14px; margin:-5px 0;
     }}
     QSlider::sub-page:horizontal {{ background:{t['ACCENT']}; border-radius:2px; }}
-    QDoubleSpinBox, QSpinBox {{
+    QDoubleSpinBox, QSpinBox, QComboBox {{
         background:{t['DARK_BG']}; border:1px solid {t['BORDER']};
         border-radius:4px; padding:3px 6px; color:{t['FG']};
+    }}
+    QComboBox::drop-down {{
+        border:none; width:20px;
+    }}
+    QComboBox QAbstractItemView {{
+        background:{t['CARD_BG']}; color:{t['FG']};
+        border:1px solid {t['BORDER']}; selection-background-color:{t['ACCENT']};
+        selection-color:#fff; outline:none;
+    }}
+    QCheckBox {{
+        spacing:6px; color:{t['FG']};
+    }}
+    QCheckBox::indicator {{
+        width:14px; height:14px; border:1px solid {t['BORDER']};
+        border-radius:3px; background:{t['DARK_BG']};
+    }}
+    QCheckBox::indicator:checked {{
+        background:{t['ACCENT']}; border-color:{t['ACCENT']};
     }}
     QGroupBox {{
         color:{t['ACCENT']}; border:1px solid {t['BORDER']};
@@ -215,7 +233,7 @@ def get_stylesheet(theme_name: str) -> str:
     QHeaderView::section {{ background: {t['CARD_BG']}; color: {t['FG']}; border: 1px solid {t['BORDER']}; }}
     
     QLabel#dim {{
-        color:{t['FG_DIM']};
+        color:{t['FG_DIM']}; font-size:11px;
     }}
     QLabel#zoom_label {{
         color:{t['ACCENT']}; font-size:11px; padding:0 4px;
@@ -401,7 +419,6 @@ class AtomColorDialog(QDialog):
             sym_lbl.setStyleSheet("font-size:13px;")
             name_lbl = QLabel(ELEM_FULL_NAME.get(elem, elem))
             name_lbl.setObjectName("dim")
-            name_lbl.setStyleSheet("font-size:11px;")
 
             btn = ColorButton(current)
             btn.colorChanged.connect(self._trigger_live)
@@ -700,7 +717,6 @@ class LegendPanel(QGroupBox):
 
             lbl = QLabel(f"{e} - {name}")
             lbl.setObjectName("dim")
-            lbl.setStyleSheet("font-size:11px;")
             rl.addWidget(swatch)
             rl.addWidget(lbl)
             rl.addStretch()
