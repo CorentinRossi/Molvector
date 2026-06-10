@@ -2,9 +2,9 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="31.616709mm"
+   width="26.421896mm"
    height="31.616709mm"
-   viewBox="0 0 31.616708 31.616709"
+   viewBox="0 0 26.421895 31.616709"
    version="1.1"
    id="svg1"
    inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
@@ -24,9 +24,9 @@
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
      showguides="true"
-     inkscape:zoom="1.0444209"
-     inkscape:cx="102.92785"
-     inkscape:cy="-23.457975"
+     inkscape:zoom="2.9540684"
+     inkscape:cx="72.273208"
+     inkscape:cy="103.4167"
      inkscape:window-width="1920"
      inkscape:window-height="1009"
      inkscape:window-x="-8"
@@ -39,18 +39,18 @@
      inkscape:label="Calque 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(2.9793277,-18.05142)">
+     transform="translate(0.38192114,-18.05142)">
     <rect
-       style="fill:#ffffff;stroke:none;stroke-width:3.59899"
+       style="fill:none;stroke:none;stroke-width:3.59899"
        id="rect5"
-       width="31.616709"
+       width="26.421896"
        height="31.616709"
-       x="-2.9793277"
+       x="-0.38192114"
        y="18.05142"
        rx="0" />
     <path
        d="M 16.077353,21.921017 4.9721131,38.188314 4.9869886,45.524946 11.824578,42.8663 22.929817,26.599003 Z M 5.9549997,39.67517 10.081768,42.49229 5.9634277,44.094407 Z"
-       style="stroke-width:3.59899"
+       style="fill:#000000;stroke-width:3.59899"
        id="path5" />
   </g>
 </svg>

@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt, QByteArray, QPoint, pyqtSignal, QTimer, QSize, QRect, QRectF
+from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF
 from PyQt6.QtGui import QAction, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
 
 try:
@@ -159,9 +159,13 @@ def get_stylesheet(theme_name: str) -> str:
     }}
     QToolBar QToolButton {{
         background:transparent; color:{t['FG']};
-        border:none; border-radius:4px; padding:4px 8px;
+        border:1px solid transparent; border-radius:4px; padding:4px 8px;
     }}
     QToolBar QToolButton:hover {{ background:{t['BORDER']}; }}
+    QToolBar QToolButton:checked {{
+        background:{t['ACCENT']}; color:white;
+        border:1px solid {t['ACCENT']};
+    }}
     QPushButton {{
         background:{t['CARD_BG']}; color:{t['FG']};
         border:1px solid {t['BORDER']}; border-radius:5px;
@@ -253,8 +257,13 @@ def get_stylesheet(theme_name: str) -> str:
     }}
     QToolButton {{
         border-radius: 4px; padding: 4px; color: {t['FG']};
+        border: 1px solid transparent;
     }}
     QToolButton:hover {{ background: {t['BORDER']}; }}
+    QToolButton:checked {{
+        background: {t['ACCENT']}; color: white;
+        border: 1px solid {t['ACCENT']};
+    }}
     QToolButton:checked {{
         background: {t['ACCENT']}; color: white;
         border: 1px solid {t['ACCENT']};
@@ -951,11 +960,22 @@ class MoleculeCanvas(QSvgWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMouseTracking(True)
         self._show_vectors = False
         self.build_mode = False
+        self.selection_mode = False
         self.build_element = "C"
         self._bonding_from: int | None = None
         self._mouse_pos: QPoint | None = None
+
+        # Selection state
+        self.selected_atoms: set = set()
+        self._sel_drag_start: QPoint | None = None
+        self._sel_rect: QRectF | None = None
+
+        # Atom dragging (Alt+click in build/select mode)
+        self._drag_atom_idx: int | None = None
 
         # Render parameters — all public, set by MainWindow
         self.base_scale     = 110.0
@@ -1013,6 +1033,7 @@ class MoleculeCanvas(QSvgWidget):
         self._rot  = np.eye(3)
         self._zoom = 1.0
         self._pan  = np.array([0.0, 0.0])
+        self.selected_atoms.clear()
         # Auto-scale: fit the molecule to 80% of the smaller canvas dimension
         positions = np.array([[a.x, a.y, a.z] for a in mol.atoms])
         if len(positions) > 0:
@@ -1077,6 +1098,7 @@ class MoleculeCanvas(QSvgWidget):
                 animation_amplitude=self.animation_amplitude,
                 output_path=tmp,
                 export_mode=export_mode,
+                selected_indices=self.selected_atoms if not export_mode else None,
                 vectors=self.arrows if self._show_vectors else None,
             )
             with open(tmp,"rb") as f:
@@ -1095,19 +1117,29 @@ class MoleculeCanvas(QSvgWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.build_mode and self._bonding_from is not None and self._mouse_pos is not None and self.molecule:
-            # Draw temporary bonding line
-            p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        draw_sel = self.selection_mode and self._sel_rect is not None and self._sel_rect.isValid()
+        draw_bond = self.build_mode and self._bonding_from is not None and self._mouse_pos is not None and self.molecule
+        if not draw_sel and not draw_bond:
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if draw_sel:
+            p.fillRect(self._sel_rect, QColor(0, 120, 255, 30))
+            p.setPen(QColor(0, 140, 255, 200))
+            p.drawRect(self._sel_rect.toRect())
+
+        if draw_bond:
             p.setPen(QColor("#007bff"))
-            # Get start atom projected pos
             atoms, _ = project_molecule(
                 self.molecule, self._rot, self._pan[0], self._pan[1],
                 self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
             )
             ax, ay, az, ar = atoms[self._bonding_from]
             p.drawLine(int(ax), int(ay), self._mouse_pos.x(), self._mouse_pos.y())
-            p.end()
+
+        p.end()
 
     # ── mouse ─────────────────────────────────────────────────────────────────
 
@@ -1157,6 +1189,38 @@ class MoleculeCanvas(QSvgWidget):
         return local
 
     def mousePressEvent(self, event):
+        self._update_cursor(event.position().toPoint(), event.modifiers())
+        # Alt/Option+click drags an atom in build or selection mode
+        mod = event.modifiers()
+        if (self.build_mode or self.selection_mode) and event.button() == Qt.MouseButton.LeftButton and (mod & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
+            idx = self._get_hit_atom(event.position().toPoint())
+            if idx is not None and self.molecule:
+                self.requestHistorySave.emit()
+                self._drag_atom_idx = idx
+                self._drag_start = event.position().toPoint()
+                self._drag_mode = "atom"
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                return
+
+        if self.selection_mode and event.button() == Qt.MouseButton.LeftButton:
+            mod = event.modifiers()
+            idx = self._get_hit_atom(event.position().toPoint())
+            if idx is not None:
+                if mod & Qt.KeyboardModifier.ShiftModifier:
+                    if idx in self.selected_atoms:
+                        self.selected_atoms.discard(idx)
+                    else:
+                        self.selected_atoms.add(idx)
+                else:
+                    self.selected_atoms = {idx} if idx not in self.selected_atoms else set()
+                self.request_render()
+                return
+            self.selected_atoms.clear()
+            self._sel_drag_start = event.position().toPoint()
+            self._sel_rect = QRectF()
+            self.request_render()
+            return
+
         if self.build_mode and event.button() == Qt.MouseButton.LeftButton:
             idx = self._get_hit_atom(event.position().toPoint())
             if idx is not None:
@@ -1272,9 +1336,60 @@ class MoleculeCanvas(QSvgWidget):
             self._drag_mode  = "pan"
             self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
 
+    def _update_cursor(self, pos: QPoint, mods):
+        has_atom = self._get_hit_atom(pos) is not None
+        alt_held = bool(mods & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier))
+
+        if self.build_mode:
+            if alt_held and has_atom:
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        elif self.selection_mode:
+            if alt_held and has_atom:
+                self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+            elif has_atom:
+                self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+
     def mouseMoveEvent(self, event):
         self._mouse_pos = event.position().toPoint()
+        self._update_cursor(event.position().toPoint(), event.modifiers())
         if self.build_mode and self._bonding_from is not None:
+            self.request_render(delay_ms=16)
+            return
+
+        if self.selection_mode and self._sel_drag_start is not None:
+            cur = event.position().toPoint()
+            self._sel_rect = QRectF(QPointF(self._sel_drag_start), QPointF(cur)).normalized()
+            self.update()
+            return
+
+        if self._drag_mode == "atom" and self._drag_atom_idx is not None and self.molecule:
+            cur = event.position().toPoint()
+            dx = cur.x() - self._drag_start.x()
+            dy = cur.y() - self._drag_start.y()
+            self._drag_start = cur
+            scale = self.base_scale * self._zoom
+            inv_rot = np.linalg.inv(self._rot)
+            delta_3d = inv_rot @ np.array([dx / scale, -dy / scale, 0.0])
+            # Move clicked atom
+            atom = self.molecule.atoms[self._drag_atom_idx]
+            atom.x += delta_3d[0]
+            atom.y += delta_3d[1]
+            atom.z += delta_3d[2]
+            # Move all other selected atoms together
+            if self._drag_atom_idx in self.selected_atoms:
+                for i in self.selected_atoms:
+                    if i == self._drag_atom_idx:
+                        continue
+                    a = self.molecule.atoms[i]
+                    a.x += delta_3d[0]
+                    a.y += delta_3d[1]
+                    a.z += delta_3d[2]
             self.request_render(delay_ms=16)
             return
 
@@ -1301,9 +1416,35 @@ class MoleculeCanvas(QSvgWidget):
         self.request_render(delay_ms=16)
 
     def mouseReleaseEvent(self, event):
+        self._update_cursor(event.position().toPoint(), event.modifiers())
+        if self.selection_mode and self._sel_drag_start is not None:
+            final_pt = event.position().toPoint()
+            rect = QRectF(QPointF(self._sel_drag_start), QPointF(final_pt)).normalized()
+            if rect.width() > 5 and rect.height() > 5 and self.molecule:
+                atoms, _ = project_molecule(
+                    self.molecule, self._rot, self._pan[0], self._pan[1],
+                    self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
+                )
+                for i, (ax, ay, az, ar) in enumerate(atoms):
+                    if rect.contains(ax, ay):
+                        self.selected_atoms.add(i)
+                self.request_render()
+            self._sel_drag_start = None
+            self._sel_rect = None
+            self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            self.update()
+            return
+
         if self.build_mode and self._bonding_from is not None:
             end_idx = self._get_hit_atom(event.position().toPoint())
-            if end_idx is not None and end_idx != self._bonding_from:
+            if end_idx is not None and end_idx == self._bonding_from:
+                self.requestHistorySave.emit()
+                self.molecule.atoms[self._bonding_from].element = self.build_element
+                if self.auto_adjust_h:
+                    self._apply_auto_h(self.molecule.atoms[self._bonding_from])
+                    self._relax_h()
+                self.moleculeChanged.emit()
+            elif end_idx is not None and end_idx != self._bonding_from:
                 self.requestHistorySave.emit()
                 # Bond existing
                 self.molecule.bonds.append(Bond(self._bonding_from, end_idx))
@@ -1339,10 +1480,42 @@ class MoleculeCanvas(QSvgWidget):
             self.request_render()
             return
 
+        was_atom_drag = self._drag_mode == "atom"
+        self._drag_atom_idx = None
         self._drag_start = None
         self._drag_mode  = "none"
-        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        if was_atom_drag:
+            if self.build_mode or self.selection_mode:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.request_render(delay_ms=0)
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.SelectAll):
+            if self.molecule:
+                self.selected_atoms = set(range(len(self.molecule.atoms)))
+                self.request_render()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            if self.selected_atoms:
+                self.selected_atoms.clear()
+                self.request_render()
+            return
+        mod = event.modifiers()
+        if event.key() == Qt.Key.Key_A and (mod & Qt.KeyboardModifier.ShiftModifier) and (mod & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)):
+            if self.selected_atoms:
+                self.selected_atoms.clear()
+                self.request_render()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if self._mouse_pos and self._get_hit_atom(self._mouse_pos) is not None:
+            self._update_cursor(self._mouse_pos, event.modifiers())
+        super().keyReleaseEvent(event)
 
     def _apply_auto_h(self, atom: Atom):
         valencies = {
@@ -1543,6 +1716,9 @@ class MainWindow(QMainWindow):
         self._redo_stack = []
         self._max_history = 50
 
+        # Toolbar icon size for mode buttons
+        self._mode_icon_size = QSize(22, 22)
+
         self._build_central()
         self._build_menubar()
         self._build_toolbar()
@@ -1679,16 +1855,27 @@ class MainWindow(QMainWindow):
         help_menu.addAction(act_about)
 
     def _setup_builder_toolbar(self):
-        # ── Build ──
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
         self._build_toolbar_obj = QToolBar("Builder")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._build_toolbar_obj)
+        self._build_toolbar_obj.setIconSize(QSize(22, 22))
+        self._build_toolbar_obj.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._build_toolbar_obj.setVisible(True)
 
-        self._act_build_btn = QAction("Build Mode", self)
+        # Selection tool
+        self._act_select_btn = QAction(QIcon(os.path.join(assets_dir, "icon_select.svg")), "Selection", self)
+        self._act_select_btn.setCheckable(True)
+        self._act_select_btn.setToolTip("Selection tool — click or drag to select atoms")
+        self._act_select_btn.triggered.connect(self._toggle_selection_mode)
+        self._build_toolbar_obj.addAction(self._act_select_btn)
+
+        # Build tool
+        self._act_build_btn = QAction(QIcon(os.path.join(assets_dir, "icon_draw.svg")), "Build Mode", self)
         self._act_build_btn.setCheckable(True)
+        self._act_build_btn.setToolTip("Build mode — add / bond atoms")
         self._act_build_btn.triggered.connect(self._toggle_build_mode)
         self._build_toolbar_obj.addAction(self._act_build_btn)
-        
+
         self._build_toolbar_obj.addSeparator()
         self._build_toolbar_obj.addWidget(QLabel(" Element: "))
         self._elem_combo = QComboBox()
@@ -2235,19 +2422,31 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
 
-    # ── Builder actions ───────────────────────────────────────────────────────
+    # ── Tool mode actions ────────────────────────────────────────────────────
+
+    def _toggle_selection_mode(self, enabled: bool):
+        self._act_select_btn.setChecked(enabled)
+        self._canvas.selection_mode = enabled
+        if enabled:
+            self._act_build_toggle.setChecked(False)
+            self._act_build_btn.setChecked(False)
+            self._canvas.build_mode = False
+            self._status.showMessage("Selection Mode: Click atoms to select, drag to rectangle-select")
+        else:
+            self._canvas.selected_atoms.clear()
+            self._canvas.request_render()
+            self._status.showMessage("Selection Mode Off")
+        self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _toggle_build_mode(self, enabled: bool):
-        # Sync menu and toolbar buttons
+        if enabled:
+            self._act_select_btn.setChecked(False)
+            self._canvas.selection_mode = False
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
-        
         self._canvas.build_mode = enabled
         self._status.showMessage("Build Mode Active: Click to add, Drag to bond, Click bond to change order" if enabled else "Build Mode Off")
-        if enabled:
-            self._canvas.setCursor(QCursor(Qt.CursorShape.CrossCursor))
-        else:
-            self._canvas.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _on_build_elem_change(self, elem: str):
         if elem == "Others…":

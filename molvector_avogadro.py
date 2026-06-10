@@ -1068,6 +1068,7 @@ def render_avogadro(
     export_mode: bool = False,
     vectors: Optional[List[Tuple[int, float, float, float, str]]] = None,
     active_vectors: Optional[np.ndarray] = None,
+    selected_indices: Optional[set] = None,
     animation_phase: float = 0.0,
     animation_amplitude: float = 0.0,
 ) -> str:
@@ -1226,7 +1227,8 @@ def render_avogadro(
         gid  = ensure_grad(atom.element)
         base = base_colors.get(atom.element, DEFAULT_BASE)
         dark = dark_colors.get(atom.element, DEFAULT_DARK)
-        draw_list.append((az, 1, ("atom",ax,ay,ar,gid,base,dark,atom.element)))
+        is_sel = selected_indices and idx in selected_indices
+        draw_list.append((az, 1, ("atom",ax,ay,ar,gid,base,dark,atom.element,is_sel)))
 
     # Add vectors (e.g. vibrational displacements)
     if vectors:
@@ -1330,7 +1332,10 @@ def render_avogadro(
                 transform=f"translate({rx:.1f},{ry:.1f}) rotate({angle:.1f})"
             ))
         elif kind == "atom":
-            _, ax, ay, ar, gid, base, dark, elem = item
+            _, ax, ay, ar, gid, base, dark, elem, is_sel = item
+            if is_sel:
+                molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.35, fill="none", stroke="#00aaff", stroke_width=2.0, opacity="0.45"))
+                molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.15, fill="none", stroke="#44ddff", stroke_width=1.2, opacity="0.75"))
             molecule_group.add(dwg.circle(center=(ax,ay),r=ar*1.04,fill=dark,stroke="none"))
             molecule_group.add(dwg.circle(center=(ax,ay),r=ar,fill=f"url(#{gid})",stroke="none"))
         elif kind == "vector":
