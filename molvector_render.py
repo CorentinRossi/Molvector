@@ -1,7 +1,7 @@
 ﻿"""
-molvector_avogadro.py — Renderer + Parsers + Force Field library
-=================================================================
-Avogadro-style ball-and-stick SVG renderer for molecules.
+molvector_render.py — Renderer + Parsers + Force Field library
+==============================================================
+Ball-and-stick SVG renderer for molecules.
 
 Parsers:
   parse_xyz(text, name)       — standard XYZ format
@@ -11,7 +11,7 @@ Parsers:
   infer_bonds(mol)            — distance-threshold bond detection
 
 Renderer:
-  render_avogadro(mol, ...)   — produces an SVG file
+  render_molecule(mol, ...)   — produces an SVG file
 
 Writers:
   save_xyz(mol)               — returns XYZ string
@@ -1049,7 +1049,7 @@ def project_molecule(
         
     return atom_projs, bond_projs
 
-def render_avogadro(
+def render_molecule(
     mol: Molecule,
     rot_x: float = 0.0,
     rot_y: float = 0.0,

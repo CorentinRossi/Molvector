@@ -45,9 +45,9 @@ except ImportError:
 
 # ── renderer / parsers ───────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
-from molvector_avogadro import (
+from molvector_render import (
     parse_xyz, parse_gaussian, parse_gaussian_log, parse_pdb, infer_bonds,
-    render_avogadro, Molecule, CPK_BASE, CPK_DARK, VDW_RADII,
+    render_molecule, Molecule, CPK_BASE, CPK_DARK, VDW_RADII,
     lighten, darken, hex_to_rgb, rgb_to_hex, auto_dark,
     chemical_formula, molecular_mass, VibrationalMode, ExcitedState,
     save_xyz, save_gaussian_input, save_pdb, project_molecule, Atom, Bond,
@@ -99,9 +99,9 @@ def load_app_icon():
             painter.end()
             icon.addPixmap(pix)
         return icon
-    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.svg")
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icons", "icon.svg")
     if not os.path.isfile(icon_path):
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+        icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.svg")
     if not os.path.isfile(icon_path):
         return QIcon()
     sizes = [16, 32, 48, 64, 128, 256]
@@ -1099,7 +1099,7 @@ class MoleculeCanvas(QSvgWidget):
         self.request_render()
 
     def set_preset(self, rx, ry, rz):
-        from molvector_avogadro import rotation_matrix
+        from molvector_render import rotation_matrix
         self._rot  = rotation_matrix(math.radians(rx), math.radians(ry), math.radians(rz))
         self._zoom = 1.0
         self._pan  = np.array([0.0, 0.0])
@@ -1129,7 +1129,7 @@ class MoleculeCanvas(QSvgWidget):
         with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
             tmp = f.name
         try:
-            render_avogadro(
+            render_molecule(
                 self.molecule,
                 rot_matrix_override=self._rot,
                 pan_x=self._pan[0], pan_y=self._pan[1],
@@ -1901,7 +1901,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction(act_about)
 
     def _setup_builder_toolbar(self):
-        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
         self._build_toolbar_obj = QToolBar("Builder")
         self._build_toolbar_obj.setObjectName("builderToolbar")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._build_toolbar_obj)
@@ -2296,7 +2296,7 @@ class MainWindow(QMainWindow):
     def _update_tool_icons(self):
         if not hasattr(self, '_act_select_btn') or not hasattr(self, '_act_build_btn'):
             return
-        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
         color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
         self._act_select_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_select.svg"), color))
         self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
@@ -2724,7 +2724,7 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(self, "About Molvector",
             "<b>Molvector</b> — 3D Molecule Viewer<br><br>"
-            "Avogadro-style ball-and-stick rendering.<br>"
+            "Ball-and-stick rendering.<br>"
             "Parsers: XYZ · Gaussian input (.gjf/.com) · Gaussian log (.log/.out)<br><br>"
             "Controls:<br>"
             "  &nbsp; Left-drag &nbsp;&nbsp; Rotate<br>"
