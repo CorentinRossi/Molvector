@@ -1160,6 +1160,7 @@ def render_avogadro(
             B_orig = B_orig + active_vectors[aj] * animation_amplitude * math.sin(animation_phase)
 
         u_3D = B_orig - A_orig
+        u_len = np.linalg.norm(u_3D)
         
         rp_A_orig = rot @ A_orig
         rp_B_orig = rot @ B_orig
@@ -1173,6 +1174,18 @@ def render_avogadro(
                 fallback = np.array([0.0, 1.0, 0.0])
             dir_3D = np.cross(fallback, u_3D)
         dir_3D = dir_3D / np.linalg.norm(dir_3D)
+        
+        # Bond surface offset in Angstroms (push to sphere surface in 3D)
+        if u_len > 1e-6:
+            u_hat = u_3D / u_len
+            vdw_A = VDW_RADII.get(mol.atoms[ai].element, DEFAULT_VDW)
+            vdw_B = VDW_RADII.get(mol.atoms[aj].element, DEFAULT_VDW)
+            surf_off_A = vdw_A * atom_scale
+            surf_off_B = vdw_B * atom_scale
+        else:
+            u_hat = np.array([0.0, 0.0, 0.0])
+            surf_off_A = 0.0
+            surf_off_B = 0.0
         
         # Bond width offset in Angstroms
         hw_angstrom = bond_width_px / 110.0
@@ -1190,9 +1203,12 @@ def render_avogadro(
             offsets = [-hw_angstrom * 2.0, 0.0, hw_angstrom * 2.0]
             indiv_hw_angstrom = hw_angstrom * 0.5
             
+        if u_len > 1e-6 and u_len <= surf_off_A + surf_off_B:
+            continue
+        
         for o_idx, offset_A in enumerate(offsets):
-            A_offset = A_orig + offset_A * dir_3D
-            B_offset = B_orig + offset_A * dir_3D
+            A_offset = A_orig + offset_A * dir_3D + u_hat * surf_off_A
+            B_offset = B_orig + offset_A * dir_3D - u_hat * surf_off_B
             
             rpA = rot @ A_offset
             rpB = rot @ B_offset
@@ -1216,7 +1232,7 @@ def render_avogadro(
                 if line_pts:
                     col = base_colors.get(col_e, DEFAULT_BASE)
                     b_id = f"b_g_{bi}_{o_idx}_{col_e}_{prefix}_{1 if is_first else 0}"
-                    z_sort = min(orig_az, orig_bz) - 0.001
+                    z_sort = (orig_az + orig_bz) / 2.0
                     if not is_first:
                         px = -px
                         py = -py
