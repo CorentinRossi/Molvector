@@ -1071,6 +1071,7 @@ def render_molecule(
     selected_indices: Optional[set] = None,
     animation_phase: float = 0.0,
     animation_amplitude: float = 0.0,
+    bond_style: str = "gradient",
 ) -> str:
 
     rot = rot_matrix_override if rot_matrix_override is not None \
@@ -1224,19 +1225,40 @@ def render_molecule(
             indiv_hw_px = max(0.1, min(100.0, indiv_hw_angstrom * scale * avg_z_factor))
             if not math.isfinite(indiv_hw_px): indiv_hw_px = 1.0
             
-            for (ox,oy,oz),(tx,ty,tz),col_e,is_first in [
-                ((ax,ay,az),(bx,by,bz), mol.atoms[ai].element, True),
-                ((bx,by,bz),(ax,ay,az), mol.atoms[aj].element, False),
-            ]:
-                line_pts, (px, py) = bond_half_line(ox,oy,tx,ty, 0.0, 0.0)
-                if line_pts:
-                    col = base_colors.get(col_e, DEFAULT_BASE)
-                    b_id = f"b_g_{bi}_{o_idx}_{col_e}_{prefix}_{1 if is_first else 0}"
-                    z_sort = (orig_az + orig_bz) / 2.0
-                    if not is_first:
-                        px = -px
-                        py = -py
-                    draw_list.append((z_sort, 0, ("bond_half", line_pts, px, py, indiv_hw_px, b_id, col_e)))
+            bdx = bx - ax
+            bdy = by - ay
+            bond_len_2d = math.hypot(bdx, bdy)
+            if bond_len_2d < 0.01:
+                continue
+            ux_bond = bdx / bond_len_2d
+            uy_bond = bdy / bond_len_2d
+            px = -uy_bond
+            py = ux_bond
+
+            if bond_style == "grey":
+                base_A = base_B = "#999999"
+                dark_A = dark_B = "#555555"
+            else:
+                base_A = base_colors.get(mol.atoms[ai].element, DEFAULT_BASE)
+                base_B = base_colors.get(mol.atoms[aj].element, DEFAULT_BASE)
+                dark_A = dark_colors.get(mol.atoms[ai].element, DEFAULT_DARK)
+                dark_B = dark_colors.get(mol.atoms[aj].element, DEFAULT_DARK)
+
+            z_sort = (orig_az + orig_bz) / 2.0
+            num_segments = 20
+            for seg_idx in range(num_segments):
+                t0 = seg_idx / num_segments
+                t1 = (seg_idx + 1) / num_segments
+                t_mid = (t0 + t1) / 2
+                sx = ax + bdx * t0
+                sy = ay + bdy * t0
+                ex = ax + bdx * t1
+                ey = ay + bdy * t1
+                base = interpolate_color(base_A, base_B, t_mid)
+                dark = interpolate_color(dark_A, dark_B, t_mid)
+                pts = ((sx, sy), (ex, ey))
+                b_id = f"b_{bi}_{o_idx}_{seg_idx}_{prefix}"
+                draw_list.append((z_sort, 0, ("bond_half", pts, px, py, indiv_hw_px, b_id, base, dark)))
 
     for idx,atom in enumerate(mol.atoms):
         ax,ay,az,ar = proj[idx]
@@ -1273,15 +1295,12 @@ def render_molecule(
     for _,__,item in draw_list:
         kind = item[0]
         if kind == "bond_half":
-            _, pts, px, py, indiv_hw, b_id, col_e = item
+            _, pts, px, py, indiv_hw, b_id, base, dark = item
             
             Lx, Ly, Lz = -0.34, -0.44, 0.83
             A = px * Lx + py * Ly
             I_max = math.hypot(A, Lz)
             if I_max == 0: I_max = 1e-6
-            
-            base = base_colors.get(col_e, DEFAULT_BASE)
-            dark = dark_colors.get(col_e, DEFAULT_DARK)
             
             def get_color_from_ratio(r: float) -> str:
                 d = 1.0 - r

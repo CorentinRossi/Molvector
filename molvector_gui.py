@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF
-from PyQt6.QtGui import QAction, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -365,7 +365,7 @@ class ColorButton(QPushButton):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SettingsDialog(QDialog):
-    def __init__(self, theme, atom_scale, bond_width, bg_color, live_callback=None, parent=None):
+    def __init__(self, theme, atom_scale, bond_width, bg_color, bond_style, live_callback=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setFixedWidth(350)
@@ -404,6 +404,13 @@ class SettingsDialog(QDialog):
         self._bond_spin.valueChanged.connect(self._on_change)
         form.addRow("Bond Width:", self._bond_spin)
 
+        # Bond Style
+        self._bond_style_combo = QComboBox()
+        self._bond_style_combo.addItems(["Gradient", "Grey"])
+        self._bond_style_combo.setCurrentText(bond_style.capitalize())
+        self._bond_style_combo.currentTextChanged.connect(self._on_change)
+        form.addRow("Bond Style:", self._bond_style_combo)
+
         layout.addLayout(form)
 
         btns = QDialogButtonBox(
@@ -419,7 +426,8 @@ class SettingsDialog(QDialog):
                 self._theme_combo.currentText().lower(),
                 self._atom_spin.value(),
                 self._bond_spin.value(),
-                self._bg_btn.color()
+                self._bg_btn.color(),
+                self._bond_style_combo.currentText().lower(),
             )
 
     @property
@@ -430,6 +438,8 @@ class SettingsDialog(QDialog):
     def bond_width(self) -> float: return self._bond_spin.value()
     @property
     def bg_color(self) -> str: return self._bg_btn.color()
+    @property
+    def bond_style(self) -> str: return self._bond_style_combo.currentText().lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1028,6 +1038,7 @@ class MoleculeCanvas(QSvgWidget):
         self.atom_scale     = 0.7
         self.bond_width_px  = 10.0
         self.background     = "#ffffff"
+        self.bond_style     = "gradient"
         self.color_overrides: dict = {}
         self.animation_phase: float = 0.0
         self.animation_amplitude: float = 0.0
@@ -1137,6 +1148,7 @@ class MoleculeCanvas(QSvgWidget):
                 scale=self.base_scale * self._zoom,
                 atom_scale=self.atom_scale,
                 bond_width_px=self.bond_width_px,
+                bond_style=self.bond_style,
                 background=self.background,
                 color_overrides=self.color_overrides or None,
                 active_vectors=self.active_vectors,
@@ -1825,6 +1837,14 @@ class MainWindow(QMainWindow):
         act_reset_colors = QAction("Reset Colours to &CPK", self)
         act_reset_colors.triggered.connect(self._reset_colors)
         edit_menu.addAction(act_reset_colors)
+
+        edit_menu.addSeparator()
+
+        ball_menu = edit_menu.addMenu("&Ball Size")
+        for label, scale in [("S&mall", 0.5), ("&Medium", 0.7), ("&Large", 1.0)]:
+            a = QAction(label, self)
+            a.triggered.connect(lambda _, s=scale: self._set_ball_size(s))
+            ball_menu.addAction(a)
 
         # ── View ──
         view_menu = mb.addMenu("&View")
@@ -2637,20 +2657,32 @@ class MainWindow(QMainWindow):
             self._ff_max_steps = s_steps.value()
             self._clean_molecule()
 
+    # ── View actions ─────────────────────────────────────────────────────────
+
+    def _set_bond_style(self, style: str):
+        self._canvas.bond_style = style
+        self._canvas.request_render()
+
+    def _set_ball_size(self, scale: float):
+        self._canvas.atom_scale = scale
+        self._canvas.request_render()
+
     # ── Edit actions ──────────────────────────────────────────────────────────
 
     def _edit_settings(self):
-        orig_theme = self._current_theme
-        orig_scale = self._canvas.atom_scale
-        orig_width = self._canvas.bond_width_px
-        orig_bg    = self._canvas.background
+        orig_theme  = self._current_theme
+        orig_scale  = self._canvas.atom_scale
+        orig_width  = self._canvas.bond_width_px
+        orig_bg     = self._canvas.background
+        orig_style  = self._canvas.bond_style
 
-        def _live_update(theme, scale, width, bg):
+        def _live_update(theme, scale, width, bg, style):
             if theme != self._current_theme:
                 self._apply_theme(theme)
             self._canvas.atom_scale = scale
             self._canvas.bond_width_px = width
             self._canvas.background = bg
+            self._canvas.bond_style = style
             self._canvas.request_render()
 
         dlg = SettingsDialog(
@@ -2658,6 +2690,7 @@ class MainWindow(QMainWindow):
             orig_scale,
             orig_width,
             orig_bg,
+            orig_style,
             live_callback=_live_update,
             parent=self,
         )
@@ -2666,6 +2699,7 @@ class MainWindow(QMainWindow):
             self._canvas.atom_scale = dlg.atom_scale
             self._canvas.bond_width_px = dlg.bond_width
             self._canvas.background = dlg.bg_color
+            self._canvas.bond_style = dlg.bond_style
             self._canvas.request_render()
         else:
             # Restore
@@ -2673,6 +2707,7 @@ class MainWindow(QMainWindow):
             self._canvas.atom_scale = orig_scale
             self._canvas.bond_width_px = orig_width
             self._canvas.background = orig_bg
+            self._canvas.bond_style = orig_style
             self._canvas.request_render()
 
     def _edit_atom_colors(self):
