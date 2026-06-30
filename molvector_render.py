@@ -1236,29 +1236,20 @@ def render_molecule(
             py = ux_bond
 
             if bond_style == "grey":
-                base_A = base_B = "#999999"
-                dark_A = dark_B = "#555555"
+                base = "#999999"
+                dark = "#555555"
             else:
                 base_A = base_colors.get(mol.atoms[ai].element, DEFAULT_BASE)
                 base_B = base_colors.get(mol.atoms[aj].element, DEFAULT_BASE)
                 dark_A = dark_colors.get(mol.atoms[ai].element, DEFAULT_DARK)
                 dark_B = dark_colors.get(mol.atoms[aj].element, DEFAULT_DARK)
+                base = interpolate_color(base_A, base_B, 0.5)
+                dark = interpolate_color(dark_A, dark_B, 0.5)
 
             z_sort = (orig_az + orig_bz) / 2.0
-            num_segments = 20
-            for seg_idx in range(num_segments):
-                t0 = seg_idx / num_segments
-                t1 = (seg_idx + 1) / num_segments
-                t_mid = (t0 + t1) / 2
-                sx = ax + bdx * t0
-                sy = ay + bdy * t0
-                ex = ax + bdx * t1
-                ey = ay + bdy * t1
-                base = interpolate_color(base_A, base_B, t_mid)
-                dark = interpolate_color(dark_A, dark_B, t_mid)
-                pts = ((sx, sy), (ex, ey))
-                b_id = f"b_{bi}_{o_idx}_{seg_idx}_{prefix}"
-                draw_list.append((z_sort, 0, ("bond_half", pts, px, py, indiv_hw_px, b_id, base, dark)))
+            pts = ((ax, ay), (bx, by))
+            b_id = f"b_{bi}_{o_idx}_{prefix}"
+            draw_list.append((z_sort, 0, ("bond_half", pts, px, py, indiv_hw_px, b_id, base, dark)))
 
     for idx,atom in enumerate(mol.atoms):
         ax,ay,az,ar = proj[idx]
