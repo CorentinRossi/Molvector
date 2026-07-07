@@ -29,12 +29,13 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QColorDialog, QPushButton, QGridLayout,
     QScrollArea, QToolBar, QMenu, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QComboBox, QPlainTextEdit, QLineEdit,
-    QButtonGroup, QRadioButton,
+    QButtonGroup, QRadioButton, QKeySequenceEdit,
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF
+from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
+from PyQt6.QtGui import QDrag
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -1304,6 +1305,201 @@ class PeriodicTableDialog(QDialog):
 
 
 
+# ── Shortcut Configuration Dialog ───────────────────────────────────────────
+
+class ShortcutDialog(QDialog):
+    CONFIG_FILE = os.path.join(os.path.dirname(__file__), "molvector_config.json")
+
+    def __init__(self, shortcut_actions: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Shortcuts")
+        self.setMinimumSize(500, 400)
+        self._actions = dict(shortcut_actions)
+
+        layout = QVBoxLayout(self)
+
+        # Table
+        self._table = QTableWidget(len(self._actions), 2)
+        self._table.setHorizontalHeaderLabels(["Action", "Shortcut"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        self._editors = []
+        for row, (aid, action) in enumerate(self._actions.items()):
+            name_item = QTableWidgetItem(action.text().replace("&", ""))
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 0, name_item)
+
+            ks = QKeySequenceEdit(action.shortcut())
+            ks.setClearButtonEnabled(True)
+            self._table.setCellWidget(row, 1, ks)
+            self._editors.append(ks)
+
+        layout.addWidget(self._table)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_restore = QPushButton("Restore Defaults")
+        btn_restore.clicked.connect(self._restore_defaults)
+        btn_row.addWidget(btn_restore)
+
+        btn_make_default = QPushButton("Make Default")
+        btn_make_default.clicked.connect(self._make_default)
+        btn_row.addWidget(btn_make_default)
+
+        btn_row.addStretch()
+
+        btn_ok = QPushButton("OK")
+        btn_ok.clicked.connect(self.accept)
+        btn_row.addWidget(btn_ok)
+
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        layout.addLayout(btn_row)
+
+    def _restore_defaults(self):
+        for row, (aid, action) in enumerate(self._actions.items()):
+            default = MainWindow.DEFAULT_SHORTCUTS.get(aid, "")
+            self._editors[row].setKeySequence(QKeySequence(default))
+
+    def _make_default(self):
+        cfg = self._collect_shortcuts()
+        config = {}
+        try:
+            if os.path.exists(self.CONFIG_FILE):
+                with open(self.CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+        except Exception:
+            pass
+        config["shortcuts"] = cfg
+        try:
+            with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            QMessageBox.information(self, "Saved", f"Shortcuts saved to:\n{self.CONFIG_FILE}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save shortcuts:\n{e}")
+
+    def get_shortcuts(self) -> dict:
+        return self._collect_shortcuts()
+
+    def _collect_shortcuts(self) -> dict:
+        result = {}
+        for row, (aid, action) in enumerate(self._actions.items()):
+            ks = self._editors[row].keySequence()
+            if not ks.isEmpty():
+                result[aid] = ks.toString()
+            else:
+                result[aid] = ""
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Quick SVG Export Dialog ────────────────────────────────────────────────────
+
+class QuickExportDialog(QDialog):
+    """A dialog with a draggable SVG target for drag-and-drop into external editors."""
+
+    def __init__(self, canvas, parent=None):
+        super().__init__(parent)
+        self._canvas = canvas
+        self._tmp_path = None
+        self.setWindowTitle("Quick SVG Export")
+        self.setFixedSize(320, 220)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        lbl = QLabel("Drag the icon into Inkscape or another SVG editor:")
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        self._drag_widget = _DragWidget(self._get_svg_path, self)
+        self._drag_widget.setFixedSize(120, 80)
+        layout.addWidget(self._drag_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        note = QLabel("Note: in Inkscape, you may have to drag the molecule to see gradients.")
+        note.setObjectName("dim")
+        note.setWordWrap(True)
+        note.setStyleSheet("font-size:10px;")
+        layout.addWidget(note)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        layout.addWidget(btn_close, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _get_svg_path(self) -> str:
+        if self._tmp_path is None:
+            svg_data = self._canvas.get_svg_bytes(export_mode=True)
+            with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+                f.write(svg_data)
+                self._tmp_path = f.name
+        return self._tmp_path
+
+    def closeEvent(self, event):
+        if self._tmp_path and os.path.exists(self._tmp_path):
+            try:
+                os.unlink(self._tmp_path)
+            except OSError:
+                pass
+            self._tmp_path = None
+        super().closeEvent(event)
+
+
+class _DragWidget(QPushButton):
+    """A draggable pushbutton that initiates a file drag on mouse move."""
+
+    def __init__(self, get_svg_path_cb, parent=None):
+        super().__init__("Drag SVG", parent)
+        self._get_svg_path = get_svg_path_cb
+        self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        self.setToolTip("Drag this into an SVG editor")
+        self.setStyleSheet("""
+            QPushButton {
+                border: 2px dashed #888;
+                border-radius: 8px;
+                font-size: 14px;
+                background: #f0f0f0;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                border-color: #4a9eff;
+                background: #e0edff;
+            }
+        """)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (event.position().toPoint() - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        svg_path = self._get_svg_path()
+
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(svg_path)])
+
+        with open(svg_path, "rb") as f:
+            mime.setData("image/svg+xml", f.read())
+
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+
+        pixmap = self.grab().scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(self.rect().center())
+
+        drag.exec(Qt.DropAction.CopyAction)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERACTIVE CANVAS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2080,8 +2276,27 @@ class MoleculeCanvas(QSvgWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN WINDOW
 # ─────────────────────────────────────────────────────────────────────────────
-
 class MainWindow(QMainWindow):
+
+    DEFAULT_SHORTCUTS = {
+        "open": "Ctrl+O",
+        "save_as": "Ctrl+S",
+        "export_svg": "Ctrl+Shift+S",
+        "export_view": "Ctrl+E",
+        "quick_svg_export": "Ctrl+Shift+X",
+        "quit": "Ctrl+Q",
+        "info": "Ctrl+I",
+        "settings": "Ctrl+P",
+        "shortcuts": "",
+        "reset_view": "R",
+        "build_mode": "B",
+        "selection_mode": "S",
+        "clean_molecule": "Ctrl+L",
+        "undo": "Ctrl+Z",
+        "redo": "Ctrl+Shift+Z",
+        "calc_results": "Ctrl+M",
+    }
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Molvector — Molecule Viewer")
@@ -2110,12 +2325,15 @@ class MainWindow(QMainWindow):
         # Toolbar icon size for mode buttons
         self._mode_icon_size = QSize(22, 22)
 
+        self._shortcut_actions: dict = {}
+
         self._build_central()
         self._build_menubar()
         self._build_toolbar()
         self._setup_builder_toolbar()
         self._build_statusbar()
         self._load_appearance_config()
+        self._apply_shortcut_config()
         self._show_placeholder()
         self.setAcceptDrops(True)
 
@@ -2131,23 +2349,33 @@ class MainWindow(QMainWindow):
         act_open.setShortcut("Ctrl+O")
         act_open.triggered.connect(self._open_file)
         file_menu.addAction(act_open)
+        self._shortcut_actions["open"] = act_open
 
         act_save_as = QAction("Save &As…", self)
-        act_save_as.setShortcut("Ctrl+Shift+S")
+        act_save_as.setShortcut("Ctrl+S")
         act_save_as.triggered.connect(self._save_as)
         file_menu.addAction(act_save_as)
+        self._shortcut_actions["save_as"] = act_save_as
 
         file_menu.addSeparator()
 
         act_save_svg = QAction("Export as &SVG…", self)
-        act_save_svg.setShortcut("Ctrl+S")
+        act_save_svg.setShortcut("Ctrl+Shift+S")
         act_save_svg.triggered.connect(self._save_svg)
         file_menu.addAction(act_save_svg)
+        self._shortcut_actions["export_svg"] = act_save_svg
 
         act_export = QAction("&Export View…", self)
         act_export.setShortcut("Ctrl+E")
         act_export.triggered.connect(self._export_view)
         file_menu.addAction(act_export)
+        self._shortcut_actions["export_view"] = act_export
+
+        act_quick_svg = QAction("Quick SVG E&xport…", self)
+        act_quick_svg.setShortcut("Ctrl+Shift+X")
+        act_quick_svg.triggered.connect(self._quick_svg_export)
+        file_menu.addAction(act_quick_svg)
+        self._shortcut_actions["quick_svg_export"] = act_quick_svg
 
         file_menu.addSeparator()
 
@@ -2155,6 +2383,7 @@ class MainWindow(QMainWindow):
         act_quit.setShortcut("Ctrl+Q")
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
+        self._shortcut_actions["quit"] = act_quit
 
         # ── Edit ──
         edit_menu = mb.addMenu("&Edit")
@@ -2167,6 +2396,7 @@ class MainWindow(QMainWindow):
         act_info.setShortcut("Ctrl+I")
         act_info.triggered.connect(self._show_molecule_info)
         edit_menu.addAction(act_info)
+        self._shortcut_actions["info"] = act_info
 
         edit_menu.addSeparator()
 
@@ -2174,13 +2404,20 @@ class MainWindow(QMainWindow):
         act_settings.setShortcut("Ctrl+P")
         act_settings.triggered.connect(self._edit_settings)
         edit_menu.addAction(act_settings)
+        self._shortcut_actions["settings"] = act_settings
+
+        act_shortcuts = QAction("&Shortcuts…", self)
+        act_shortcuts.triggered.connect(self._edit_shortcuts)
+        edit_menu.addAction(act_shortcuts)
+        self._shortcut_actions["shortcuts"] = act_shortcuts
 
         # ── View ──
         view_menu = mb.addMenu("&View")
         act_reset_view = QAction("&Reset View", self)
-        act_reset_view.setShortcut("Ctrl+R")
+        act_reset_view.setShortcut("R")
         act_reset_view.triggered.connect(lambda: self._canvas.reset_view())
         view_menu.addAction(act_reset_view)
+        self._shortcut_actions["reset_view"] = act_reset_view
         view_menu.addSeparator()
 
         presets_menu = view_menu.addMenu("&Preset Orientation")
@@ -2214,10 +2451,19 @@ class MainWindow(QMainWindow):
         
         act_toggle = QAction("Build Mode", self)
         act_toggle.setCheckable(True)
-        act_toggle.setShortcut("Ctrl+B")
+        act_toggle.setShortcut("B")
         act_toggle.triggered.connect(self._toggle_build_mode)
         self._menu_build.addAction(act_toggle)
         self._act_build_toggle = act_toggle # reference for toolbar sync
+        self._shortcut_actions["build_mode"] = act_toggle
+
+        act_select_toggle = QAction("Selection Mode", self)
+        act_select_toggle.setCheckable(True)
+        act_select_toggle.setShortcut("S")
+        act_select_toggle.triggered.connect(self._toggle_selection_mode)
+        self._menu_build.addAction(act_select_toggle)
+        self._act_select_toggle = act_select_toggle
+        self._shortcut_actions["selection_mode"] = act_select_toggle
 
         self._menu_build.addSeparator()
         
@@ -2225,11 +2471,13 @@ class MainWindow(QMainWindow):
         act_clean_m.setShortcut("Ctrl+L")
         act_clean_m.triggered.connect(self._clean_molecule)
         self._menu_build.addAction(act_clean_m)
+        self._shortcut_actions["clean_molecule"] = act_clean_m
 
         act_undo = QAction("Undo", self)
         act_undo.setShortcut("Ctrl+Z")
         act_undo.triggered.connect(self._undo)
         self._menu_build.addAction(act_undo)
+        self._shortcut_actions["undo"] = act_undo
 
         act_redo = QAction("Redo", self)
         act_redo.setShortcuts([QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")])
@@ -2323,7 +2571,7 @@ class MainWindow(QMainWindow):
             return a
 
         tb_action("Open",      self._open_file, "Ctrl+O", "Open molecule file")
-        tb_action("Save SVG",  self._save_svg,  "Ctrl+S", "Export current view as SVG")
+        tb_action("Save SVG",  self._save_svg,  None, "Export current view as SVG")
         tb.addSeparator()
         tb_action("Reset",     lambda: self._canvas.reset_view())
         tb.addSeparator()
@@ -2520,9 +2768,12 @@ class MainWindow(QMainWindow):
         if mol and (mol.vibrational_modes or mol.excited_states):
             self._menu_calc.addSeparator()
             act_results = QAction("Calculation Results…", self)
-            act_results.setShortcut("Ctrl+M")
+            overrides = self._load_shortcut_overrides()
+            ks = overrides.get("calc_results", "Ctrl+M")
+            act_results.setShortcut(ks)
             act_results.triggered.connect(self._show_calculations_dialog)
             self._menu_calc.addAction(act_results)
+            self._shortcut_actions["calc_results"] = act_results
 
     def _generate_g16_input(self):
         mol = self._canvas.molecule
@@ -2783,6 +3034,57 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error saving", str(e))
 
+    def _quick_svg_export(self):
+        if self._canvas.molecule is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+        dlg = QuickExportDialog(self._canvas, self)
+        dlg.show()
+
+    def _edit_shortcuts(self):
+        dlg = ShortcutDialog(self._shortcut_actions, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            overrides = dlg.get_shortcuts()
+            self._apply_shortcuts(overrides)
+            self._save_shortcut_overrides(overrides)
+
+    def _apply_shortcut_config(self):
+        overrides = self._load_shortcut_overrides()
+        if overrides:
+            self._apply_shortcuts(overrides)
+
+    def _apply_shortcuts(self, overrides: dict):
+        for aid, seq_str in overrides.items():
+            if aid in self._shortcut_actions and seq_str:
+                self._shortcut_actions[aid].setShortcut(seq_str)
+
+    def _load_shortcut_overrides(self) -> dict:
+        cfg_path = os.path.join(os.path.dirname(__file__), "molvector_config.json")
+        try:
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                return cfg.get("shortcuts", {})
+        except Exception:
+            pass
+        return {}
+
+    def _save_shortcut_overrides(self, overrides: dict):
+        cfg_path = os.path.join(os.path.dirname(__file__), "molvector_config.json")
+        config = {}
+        try:
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+        except Exception:
+            pass
+        config["shortcuts"] = overrides
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+        except Exception:
+            pass
+
     def _export_view(self):
         if self._canvas.molecule is None:
             QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
@@ -2894,6 +3196,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_selection_mode(self, enabled: bool):
         self._act_select_btn.setChecked(enabled)
+        self._act_select_toggle.setChecked(enabled)
         self._canvas.selection_mode = enabled
         if enabled:
             self._act_build_toggle.setChecked(False)
@@ -2909,6 +3212,7 @@ class MainWindow(QMainWindow):
     def _toggle_build_mode(self, enabled: bool):
         if enabled:
             self._act_select_btn.setChecked(False)
+            self._act_select_toggle.setChecked(False)
             self._canvas.selection_mode = False
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
