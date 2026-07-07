@@ -10,7 +10,7 @@ Controls:
 
 Menus:
   File    Open / Save SVG / Quit
-  Edit    Appearance (ball size, bond width) / Atom Colours / Reset Colors
+  Edit    Appearance (ball size, bond width) / Atom Colours / Reset Colors / Info
   View    Preset orientations / Reset View / Background color
   Help    About
 
@@ -2051,6 +2051,13 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
 
+        act_info = QAction("&Info…", self)
+        act_info.setShortcut("Ctrl+I")
+        act_info.triggered.connect(self._show_molecule_info)
+        edit_menu.addAction(act_info)
+
+        edit_menu.addSeparator()
+
         act_settings = QAction("&Settings…", self)
         act_settings.setShortcut("Ctrl+P")
         act_settings.triggered.connect(self._edit_settings)
@@ -2589,6 +2596,55 @@ class MainWindow(QMainWindow):
             f"{len(mol.bonds)} bonds  |  {mass:.3f} uma  [{src}]"
         )
         self._legend.update_for(mol, self._color_overrides)
+
+    def _show_molecule_info(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            return
+
+        from collections import Counter
+        formula = chemical_formula(mol)
+        mass = molecular_mass(mol)
+        charge = mol.charge
+        charge_str = "neutral" if charge == 0 else (f"+{charge}" if charge > 0 else str(charge))
+        counts = Counter(a.element for a in mol.atoms)
+        elem_parts = [f"{e}\u2009{counts[e]}" for e in sorted(counts.keys())]
+        elem_str = "  " + ", ".join(elem_parts) if mol.atoms else "—"
+        src = self._current_source or "—"
+        path = self._current_path or "—"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Info \u2014 {formula}")
+        dlg.setMinimumWidth(400)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(6)
+
+        for label, value in [
+            ("Formula:", formula),
+            ("Charge:", charge_str),
+            ("Mass:", f"{mass:.3f} uma"),
+            ("Atoms:", str(len(mol.atoms))),
+            ("Bonds:", str(len(mol.bonds))),
+            ("Source:", src),
+            ("Path:", path),
+            ("Elements:", elem_str),
+        ]:
+            row = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setStyleSheet("font-weight: bold;")
+            val = QLabel(value)
+            val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            val.setWordWrap(True)
+            row.addWidget(lbl)
+            row.addWidget(val, 1)
+            layout.addLayout(row)
+
+        layout.addSpacing(10)
+        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn.rejected.connect(dlg.reject)
+        layout.addWidget(btn)
+        dlg.exec()
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
