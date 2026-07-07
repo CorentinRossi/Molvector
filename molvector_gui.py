@@ -18,7 +18,7 @@ Dependencies:
     pip install PyQt6 numpy svgwrite
 """
 
-import sys, os, math, tempfile, platform
+import sys, os, math, json, tempfile, platform
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QColorDialog, QPushButton, QGridLayout,
     QScrollArea, QToolBar, QMenu, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QComboBox, QPlainTextEdit, QLineEdit,
+    QButtonGroup, QRadioButton,
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
@@ -363,6 +364,157 @@ class ColorButton(QPushButton):
 # ─────────────────────────────────────────────────────────────────────────────
 # SETTINGS DIALOG  (Theme, ball size, bond width, background)
 # ─────────────────────────────────────────────────────────────────────────────
+
+class AppearanceDialog(QDialog):
+    CONFIG_FILE = os.path.join(os.path.dirname(__file__), "molvector_config.json")
+
+    def __init__(self, atom_scale, bond_width, bond_style, color_overrides,
+                 live_callback=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Appearance")
+        self.setMinimumWidth(400)
+        self._live_callback = live_callback
+        self._orig = (atom_scale, bond_width, bond_style,
+                      dict(color_overrides))
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        # Ball size
+        self._ball_slider = QSlider(Qt.Orientation.Horizontal)
+        self._ball_slider.setRange(20, 150)
+        self._ball_slider.setValue(int(atom_scale * 100))
+        self._ball_slider.setFixedWidth(160)
+        self._ball_lbl = QLabel(f"{atom_scale:.2f}")
+        self._ball_slider.valueChanged.connect(self._on_change)
+        ball_row = QHBoxLayout()
+        ball_row.addWidget(self._ball_slider)
+        ball_row.addWidget(self._ball_lbl)
+        form.addRow("Ball Size:", ball_row)
+
+        # Bond width
+        self._bondw_slider = QSlider(Qt.Orientation.Horizontal)
+        self._bondw_slider.setRange(2, 30)
+        self._bondw_slider.setValue(int(bond_width))
+        self._bondw_slider.setFixedWidth(160)
+        self._bondw_lbl = QLabel(f"{bond_width:.0f}")
+        self._bondw_slider.valueChanged.connect(self._on_change)
+        bondw_row = QHBoxLayout()
+        bondw_row.addWidget(self._bondw_slider)
+        bondw_row.addWidget(self._bondw_lbl)
+        form.addRow("Bond Width:", bondw_row)
+
+        # Bond style
+        style_group = QButtonGroup(self)
+        style_row = QHBoxLayout()
+        for s in ("gradient", "grey", "splitted"):
+            rb = QRadioButton(s.capitalize())
+            if s == bond_style:
+                rb.setChecked(True)
+            style_group.addButton(rb)
+            style_row.addWidget(rb)
+        self._style_btns = style_group
+        style_row.addStretch()
+        form.addRow("Bond Style:", style_row)
+
+        # Atom colours
+        self._color_overrides = color_overrides
+        self._edit_colors_btn = QPushButton("Edit Atom Colours…")
+        self._edit_colors_btn.clicked.connect(self._edit_atom_colors)
+        form.addRow("Atom Colours:", self._edit_colors_btn)
+
+        layout.addLayout(form)
+
+        # Bottom buttons
+        layout.addSpacing(6)
+        btn_row = QHBoxLayout()
+        btn_make_config = QPushButton("Make Default")
+        btn_make_config.clicked.connect(self._save_config)
+        btn_restore = QPushButton("Restore Defaults")
+        btn_restore.clicked.connect(self._restore_defaults)
+        btn_row.addWidget(btn_make_config)
+        btn_row.addWidget(btn_restore)
+        btn_row.addStretch()
+        dialog_btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_btns.accepted.connect(self.accept)
+        dialog_btns.rejected.connect(self.reject)
+        btn_row.addWidget(dialog_btns)
+        layout.addLayout(btn_row)
+
+    def _on_change(self):
+        if self._live_callback:
+            self._live_callback(
+                self.ball_scale, self.bond_width, self.bond_style,
+                self._color_overrides,
+            )
+
+    @property
+    def ball_scale(self) -> float:
+        return self._ball_slider.value() / 100.0
+
+    @property
+    def bond_width(self) -> float:
+        return float(self._bondw_slider.value())
+
+    @property
+    def bond_style(self) -> str:
+        for rb in self._style_btns.buttons():
+            if rb.isChecked():
+                return rb.text().lower()
+        return "gradient"
+
+    def _edit_atom_colors(self):
+        mol = self.parent()._canvas.molecule if self.parent() else None
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+        elements = sorted({a.element for a in mol.atoms})
+        dlg = AtomColorDialog(elements, self._color_overrides, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._color_overrides = dlg.get_overrides()
+            self._on_change()
+
+    def _save_config(self):
+        config = {
+            "atom_scale": self.ball_scale,
+            "bond_width_px": self.bond_width,
+            "bond_style": self.bond_style,
+            "color_overrides": self._color_overrides,
+        }
+        try:
+            with open(self.CONFIG_FILE, "w") as f:
+                json.dump(config, f, indent=2)
+            QMessageBox.information(self, "Config Saved",
+                f"Settings saved to:\n{self.CONFIG_FILE}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save config:\n{e}")
+
+    def _restore_defaults(self):
+        self._ball_slider.setValue(70)
+        self._bondw_slider.setValue(10)
+        for rb in self._style_btns.buttons():
+            if rb.text().lower() == "grey":
+                rb.setChecked(True)
+                break
+        self._color_overrides = {}
+        self._on_change()
+
+    @staticmethod
+    def load_config():
+        path = AppearanceDialog.CONFIG_FILE
+        if os.path.isfile(path):
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+
 
 class SettingsDialog(QDialog):
     def __init__(self, theme, bg_color, live_callback=None, parent=None):
@@ -1963,6 +2115,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._setup_builder_toolbar()
         self._build_statusbar()
+        self._load_appearance_config()
         self._show_placeholder()
         self.setAcceptDrops(True)
 
@@ -2006,50 +2159,9 @@ class MainWindow(QMainWindow):
         # ── Edit ──
         edit_menu = mb.addMenu("&Edit")
 
-        # Appearance submenu
-        app_menu = edit_menu.addMenu("&Appearance")
-
-        atom_menu = app_menu.addMenu("&Atom Colours")
-        act_edit_colors = QAction("&Edit…", self)
-        act_edit_colors.setShortcut("Ctrl+Shift+C")
-        act_edit_colors.triggered.connect(self._edit_atom_colors)
-        atom_menu.addAction(act_edit_colors)
-        act_reset_colors = QAction("&Reset to Default", self)
-        act_reset_colors.triggered.connect(self._reset_colors)
-        atom_menu.addAction(act_reset_colors)
-
-        ball_menu = app_menu.addMenu("&Ball Size")
-        for label, scale in [("S&mall", 0.5), ("&Medium", 0.7), ("&Large", 1.0)]:
-            a = QAction(label, self)
-            a.triggered.connect(lambda _, s=scale: self._set_ball_size(s))
-            ball_menu.addAction(a)
-
-        bondw_menu = app_menu.addMenu("&Bond Width")
-        for label, w in [("&Thin", 6.0), ("&Medium", 10.0), ("&Thick", 16.0)]:
-            a = QAction(label, self)
-            a.triggered.connect(lambda _, w=w: self._set_bond_width(w))
-            bondw_menu.addAction(a)
-
-        style_menu = app_menu.addMenu("&Bond Style")
-        self._act_bond_gradient = QAction("&Gradient",    self, checkable=True)
-        self._act_bond_grey     = QAction("&Grey",        self, checkable=True)
-        self._act_bond_match    = QAction("&Match Atom",  self, checkable=True)
-        current = self._canvas.bond_style
-        self._act_bond_gradient.setChecked(current == "gradient")
-        self._act_bond_grey    .setChecked(current == "grey")
-        self._act_bond_match   .setChecked(current == "match")
-        bsg = QActionGroup(self)
-        bsg.addAction(self._act_bond_gradient)
-        bsg.addAction(self._act_bond_grey)
-        bsg.addAction(self._act_bond_match)
-        style_menu.addAction(self._act_bond_gradient)
-        style_menu.addAction(self._act_bond_grey)
-        style_menu.addAction(self._act_bond_match)
-        self._act_bond_gradient.triggered.connect(lambda: self._set_bond_style("gradient"))
-        self._act_bond_grey    .triggered.connect(lambda: self._set_bond_style("grey"))
-        self._act_bond_match   .triggered.connect(lambda: self._set_bond_style("match"))
-
-        edit_menu.addSeparator()
+        act_appearance = QAction("&Appearance…", self)
+        act_appearance.triggered.connect(self._edit_appearance)
+        edit_menu.addAction(act_appearance)
 
         act_info = QAction("&Info…", self)
         act_info.setShortcut("Ctrl+I")
@@ -2223,16 +2335,14 @@ class MainWindow(QMainWindow):
         # Style this in get_stylesheet instead of here
         tb.addWidget(self._zoom_lbl)
 
-        tb.addSeparator()
-
-        tb.addWidget(QLabel("Scale:"))
-        self._scale_slider = QSlider(Qt.Orientation.Horizontal)
-        self._scale_slider.setRange(40, 220)
-        self._scale_slider.setValue(110)
-        self._scale_slider.setFixedWidth(120)
-        self._scale_slider.setToolTip("Base render scale (Å → pixels)")
-        self._scale_slider.valueChanged.connect(self._on_scale_change)
-        tb.addWidget(self._scale_slider)
+        # Zoom slider
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setRange(15, 600)
+        self._zoom_slider.setValue(100)
+        self._zoom_slider.setFixedWidth(120)
+        self._zoom_slider.setToolTip("Zoom level (%)")
+        self._zoom_slider.valueChanged.connect(self._on_zoom_change)
+        tb.addWidget(self._zoom_slider)
 
     # ── central layout ────────────────────────────────────────────────────────
 
@@ -2392,7 +2502,6 @@ class MainWindow(QMainWindow):
             mol, src = self._load_mol_from_path(path)
             self._color_overrides = {}
             self._canvas.color_overrides = {}
-            self._canvas.base_scale = float(self._scale_slider.value())
             self._canvas.load_molecule(mol)
             self._legend.update_for(mol, {})
             self._current_source = src
@@ -2418,7 +2527,7 @@ class MainWindow(QMainWindow):
     def _generate_g16_input(self):
         mol = self._canvas.molecule
         if not mol or not mol.atoms:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
         dlg = G16InputDialog(mol, parent=self)
         dlg.exec()
@@ -2600,7 +2709,7 @@ class MainWindow(QMainWindow):
     def _show_molecule_info(self):
         mol = self._canvas.molecule
         if mol is None:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
 
         from collections import Counter
@@ -2658,7 +2767,7 @@ class MainWindow(QMainWindow):
 
     def _save_svg(self):
         if self._canvas.molecule is None:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
         safe_name = get_safe_filename(self._canvas.molecule.name)
         path, _ = QFileDialog.getSaveFileName(
@@ -2676,7 +2785,7 @@ class MainWindow(QMainWindow):
 
     def _export_view(self):
         if self._canvas.molecule is None:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
 
         safe_name = get_safe_filename(self._canvas.molecule.name)
@@ -2752,7 +2861,7 @@ class MainWindow(QMainWindow):
     def _save_as(self):
         mol = self._canvas.molecule
         if not mol:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
             
         safe_name = get_safe_filename(mol.name)
@@ -2950,6 +3059,49 @@ class MainWindow(QMainWindow):
 
     # ── Edit actions ──────────────────────────────────────────────────────────
 
+    def _load_appearance_config(self):
+        cfg = AppearanceDialog.load_config()
+        if cfg is None:
+            return
+        self._canvas.atom_scale = cfg.get("atom_scale", self._canvas.atom_scale)
+        self._canvas.bond_width_px = cfg.get("bond_width_px", self._canvas.bond_width_px)
+        self._canvas.bond_style = cfg.get("bond_style", self._canvas.bond_style)
+        self._color_overrides = cfg.get("color_overrides", {})
+        self._canvas.color_overrides = self._color_overrides
+        self._canvas.request_render()
+
+    def _edit_appearance(self):
+        orig = (self._canvas.atom_scale, self._canvas.bond_width_px,
+                self._canvas.bond_style, dict(self._color_overrides))
+
+        def _live_update(ball, bw, style, colors):
+            self._canvas.atom_scale = ball
+            self._canvas.bond_width_px = bw
+            self._canvas.bond_style = style
+            self._color_overrides = colors
+            self._canvas.color_overrides = colors
+            if self._canvas.molecule:
+                self._legend.update_for(self._canvas.molecule, colors)
+            self._canvas.request_render()
+
+        dlg = AppearanceDialog(*orig, live_callback=_live_update, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._canvas.atom_scale = dlg.ball_scale
+            self._canvas.bond_width_px = dlg.bond_width
+            self._canvas.bond_style = dlg.bond_style
+            self._color_overrides = dlg._color_overrides
+            self._canvas.color_overrides = dlg._color_overrides
+            if self._canvas.molecule:
+                self._legend.update_for(self._canvas.molecule, dlg._color_overrides)
+            self._canvas.request_render()
+        else:
+            (self._canvas.atom_scale, self._canvas.bond_width_px,
+             self._canvas.bond_style, self._color_overrides) = orig
+            self._canvas.color_overrides = self._color_overrides
+            if self._canvas.molecule:
+                self._legend.update_for(self._canvas.molecule, self._color_overrides)
+            self._canvas.request_render()
+
     def _edit_settings(self):
         orig_theme = self._current_theme
         orig_bg    = self._canvas.background
@@ -2978,7 +3130,7 @@ class MainWindow(QMainWindow):
     def _edit_atom_colors(self):
         mol = self._canvas.molecule
         if mol is None:
-            QMessageBox.information(self, "No molecule", "Load a molecule first.")
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
             return
         elements = sorted({a.element for a in mol.atoms})
         orig_overrides = dict(self._color_overrides)
@@ -3035,12 +3187,17 @@ class MainWindow(QMainWindow):
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 
-    def _on_scale_change(self, value):
-        self._canvas.base_scale = float(value)
+    def _on_zoom_change(self, value):
+        self._canvas._zoom = value / 100.0
+        self._zoom_lbl.setText(f"{value}%")
         self._canvas.request_render(delay_ms=60)
 
     def _on_rotation_changed(self):
-        self._zoom_lbl.setText(f"{int(self._canvas._zoom*100)}%")
+        pct = int(self._canvas._zoom * 100)
+        self._zoom_lbl.setText(f"{pct}%")
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(pct)
+        self._zoom_slider.blockSignals(False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
