@@ -2,3 +2,6 @@
 /__pycache__
 assets/.DS_Store
 molvector_config.json
+assets/.DS_Store
+__pycache__/molvector_render.cpython-313.pyc
+.DS_Store
