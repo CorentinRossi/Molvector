@@ -1131,8 +1131,9 @@ def render_molecule(
             return gid
         base = base_colors.get(elem, DEFAULT_BASE)
         dark = dark_colors.get(elem, DEFAULT_DARK)
-        g = dwg.radialGradient(id=gid, center=("33%","28%"), r="68%")
-        g["fx"]="33%"; g["fy"]="28%"
+        g = dwg.radialGradient(id=gid, center=("0.33","0.28"), r="0.68")
+        g["fx"]="0.33"; g["fy"]="0.28"
+        g["gradientUnits"] = "objectBoundingBox"
         g.add_stop_color("0%",   lighten(base,0.70), 1.0)
         g.add_stop_color("18%",  lighten(base,0.40), 1.0)
         g.add_stop_color("48%",  lighten(base,0.15), 1.0)
