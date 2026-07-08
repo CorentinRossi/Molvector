@@ -1,7 +1,9 @@
 .DS_Store
-/__pycache__
-assets/.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
 molvector_config.json
-assets/.DS_Store
-__pycache__/molvector_render.cpython-313.pyc
-.DS_Store
+*.egg/

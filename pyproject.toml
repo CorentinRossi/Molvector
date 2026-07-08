@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "molvector"
+version = "1.0.0"
+description = "Interactive 3D Molecule Viewer and Builder"
+readme = {text = "Molvector — interactive 3D molecule viewer, builder, and Gaussian input generator.", content-type = "text/markdown"}
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "numpy",
+    "svgwrite",
+    "PyQt6",
+]
+
+[project.optional-dependencies]
+spectra = ["matplotlib"]
+openbabel = ["openbabel"]
+
+[project.urls]
+Homepage = "https://github.com/anomalyco/Molvector"
+
+[project.scripts]
+molvector = "molvector_gui:main"
+
+[tool.setuptools]
+packages = []
+py-modules = ["molvector_gui", "molvector_render"]
