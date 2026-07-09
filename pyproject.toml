@@ -13,6 +13,7 @@ dependencies = [
     "numpy",
     "svgwrite",
     "PyQt6",
+	"mol_strudel"
 ]
 
 [project.optional-dependencies]
