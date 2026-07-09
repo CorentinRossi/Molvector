@@ -1569,6 +1569,7 @@ class MoleculeCanvas(QSvgWidget):
         self._show_vectors = False
         self.build_mode = False
         self.selection_mode = False
+        self.align_mode = False
         self.build_element = "C"
         self._bonding_from: int | None = None
         self._mouse_pos: QPoint | None = None
@@ -1580,6 +1581,7 @@ class MoleculeCanvas(QSvgWidget):
 
         # Atom dragging (Alt+click in build/select mode)
         self._drag_atom_idx: int | None = None
+        self._align_axis: np.ndarray | None = None  # bond axis for align rotate-around-bond drag
 
         # Render parameters — all public, set by MainWindow
         self.base_scale     = 110.0
@@ -1942,6 +1944,52 @@ class MoleculeCanvas(QSvgWidget):
                 self.request_render()
                 return
 
+        if self.align_mode and event.button() == Qt.MouseButton.LeftButton:
+            b_idx = self._get_hit_bond(event.position().toPoint())
+            if b_idx is not None and self.molecule:
+                bond = self.molecule.bonds[b_idx]
+                a1 = self.molecule.atoms[bond.i]
+                a2 = self.molecule.atoms[bond.j]
+                v_local = np.array([a2.x - a1.x, a2.y - a1.y, a2.z - a1.z])
+                norm = np.linalg.norm(v_local)
+                if norm > 1e-10:
+                    v_local_hat = v_local / norm
+                    v_view = self._rot @ v_local_hat
+                    target = np.array([0.0, 1.0, 0.0])
+                    dot = np.dot(v_view, target)
+                    # Pick the closer vertical direction to avoid large flips
+                    if dot < 0:
+                        target = -target
+                        dot = -dot
+                    if dot < 0.9999:
+                        sin_theta = np.linalg.norm(np.cross(v_view, target))
+                        if sin_theta > 1e-10:
+                            cos_theta = dot
+                            axis = np.cross(v_view, target) / sin_theta
+                            K = np.array([[0, -axis[2], axis[1]],
+                                          [axis[2], 0, -axis[0]],
+                                          [-axis[1], axis[0], 0]])
+                            R_corr = np.eye(3) + sin_theta * K + (1.0 - cos_theta) * (K @ K)
+                            self._rot = R_corr @ self._rot
+                            self.rotationChanged.emit()
+                            self.request_render()
+            return
+
+        if self.align_mode and event.button() == Qt.MouseButton.RightButton:
+            b_idx = self._get_hit_bond(event.position().toPoint())
+            if b_idx is not None and self.molecule:
+                bond = self.molecule.bonds[b_idx]
+                a1 = self.molecule.atoms[bond.i]
+                a2 = self.molecule.atoms[bond.j]
+                v_local = np.array([a2.x - a1.x, a2.y - a1.y, a2.z - a1.z])
+                n = np.linalg.norm(v_local)
+                if n > 1e-10:
+                    self._align_axis = v_local / n
+                    self._drag_start = event.position().toPoint()
+                    self._drag_mode = "rotate_around_bond"
+                    self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+                    return
+
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position().toPoint()
             self._drag_mode  = "rotate"
@@ -1965,6 +2013,11 @@ class MoleculeCanvas(QSvgWidget):
                 self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
             elif has_atom:
                 self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        elif self.align_mode:
+            if self._get_hit_bond(pos) is not None:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
             else:
                 self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         else:
@@ -2026,6 +2079,17 @@ class MoleculeCanvas(QSvgWidget):
         elif self._drag_mode == "pan":
             self._pan[0] += dx
             self._pan[1] += dy
+        elif self._drag_mode == "rotate_around_bond" and self._align_axis is not None:
+            sens = 0.008
+            angle = dx * sens
+            if abs(angle) > 1e-10:
+                axis = self._rot @ self._align_axis
+                ca = math.cos(angle); sa = math.sin(angle)
+                K = np.array([[0, -axis[2], axis[1]],
+                              [axis[2], 0, -axis[0]],
+                              [-axis[1], axis[0], 0]])
+                R = np.eye(3) + sa * K + (1.0 - ca) * (K @ K)
+                self._rot = R @ self._rot
 
         self.rotationChanged.emit()
         self.request_render(delay_ms=16)
@@ -2104,6 +2168,8 @@ class MoleculeCanvas(QSvgWidget):
                 self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
             else:
                 self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
+        elif self.align_mode:
+            self._update_cursor(event.position().toPoint(), Qt.KeyboardModifier.NoModifier)
         else:
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
         self.request_render(delay_ms=0)
@@ -2319,6 +2385,7 @@ class MainWindow(QMainWindow):
         "reset_view": "R",
         "build_mode": "B",
         "selection_mode": "S",
+        "align_mode": "A",
         "clean_molecule": "Ctrl+L",
         "undo": "Ctrl+Z",
         "redo": "Ctrl+Shift+Z",
@@ -2497,6 +2564,14 @@ class MainWindow(QMainWindow):
         self._act_select_toggle = act_select_toggle
         self._shortcut_actions["selection_mode"] = act_select_toggle
 
+        act_align_toggle = QAction("Align Mode", self)
+        act_align_toggle.setCheckable(True)
+        act_align_toggle.setShortcut("A")
+        act_align_toggle.triggered.connect(self._toggle_align_mode)
+        self._menu_build.addAction(act_align_toggle)
+        self._act_align_toggle = act_align_toggle
+        self._shortcut_actions["align_mode"] = act_align_toggle
+
         self._menu_build.addSeparator()
         
         act_clean_m = QAction("Clean Molecule", self)
@@ -2565,6 +2640,14 @@ class MainWindow(QMainWindow):
         self._act_build_btn.setToolTip("Build mode — add / bond atoms")
         self._act_build_btn.triggered.connect(self._toggle_build_mode)
         self._build_toolbar_obj.addAction(self._act_build_btn)
+
+        # Align tool
+        align_path = os.path.join(assets_dir, "icon_align.svg")
+        self._act_align_btn = QAction(load_colored_icon(align_path, icon_color), "Align", self)
+        self._act_align_btn.setCheckable(True)
+        self._act_align_btn.setToolTip("Align tool — click a bond to align it vertically")
+        self._act_align_btn.triggered.connect(self._toggle_align_mode)
+        self._build_toolbar_obj.addAction(self._act_align_btn)
 
         self._build_toolbar_obj.addSeparator()
         self._build_toolbar_obj.addWidget(QLabel(" Element: "))
@@ -2972,6 +3055,8 @@ class MainWindow(QMainWindow):
         color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
         self._act_select_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_select.svg"), color))
         self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
+        if hasattr(self, '_act_align_btn'):
+            self._act_align_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
 
     def _update_info_panel(self, mol):
         """Populate sidebar labels and status bar for a loaded molecule."""
@@ -3268,6 +3353,9 @@ class MainWindow(QMainWindow):
             self._act_build_toggle.setChecked(False)
             self._act_build_btn.setChecked(False)
             self._canvas.build_mode = False
+            self._act_align_toggle.setChecked(False)
+            self._act_align_btn.setChecked(False)
+            self._canvas.align_mode = False
             self._status.showMessage("Selection Mode: Click atoms to select, drag to rectangle-select")
         else:
             self._canvas.selected_atoms.clear()
@@ -3280,10 +3368,27 @@ class MainWindow(QMainWindow):
             self._act_select_btn.setChecked(False)
             self._act_select_toggle.setChecked(False)
             self._canvas.selection_mode = False
+            self._act_align_toggle.setChecked(False)
+            self._act_align_btn.setChecked(False)
+            self._canvas.align_mode = False
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
         self._canvas.build_mode = enabled
         self._status.showMessage("Build Mode Active: Click to add, Drag to bond, Click bond to change order" if enabled else "Build Mode Off")
+        self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _toggle_align_mode(self, enabled: bool):
+        if enabled:
+            self._act_select_btn.setChecked(False)
+            self._act_select_toggle.setChecked(False)
+            self._canvas.selection_mode = False
+            self._act_build_toggle.setChecked(False)
+            self._act_build_btn.setChecked(False)
+            self._canvas.build_mode = False
+        self._act_align_toggle.setChecked(enabled)
+        self._act_align_btn.setChecked(enabled)
+        self._canvas.align_mode = enabled
+        self._status.showMessage("Align Mode: Click a bond to align it vertically" if enabled else "Align Mode Off")
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _on_build_elem_change(self, elem: str):
