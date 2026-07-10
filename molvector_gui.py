@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData
+from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData, QEvent
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
 from PyQt6.QtGui import QDrag
 
@@ -345,18 +345,94 @@ class ColorButton(QPushButton):
 # SETTINGS DIALOG  (Theme, ball size, bond width, background)
 # ─────────────────────────────────────────────────────────────────────────────
 
+POSITION_LABELS = {
+    "top-left":      "Top left",
+    "top":           "Top",
+    "top-right":     "Top right",
+    "left":          "Left",
+    "center":        "Center",
+    "right":         "Right",
+    "bottom-left":   "Bottom left",
+    "bottom":        "Bottom",
+    "bottom-right":  "Bottom right",
+}
+
+class LightPositionDialog(QDialog):
+    def __init__(self, current="top-left", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Light Position")
+        self.setFixedSize(320, 260)
+        self._selected = current
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+
+        positions = [
+            ("top-left", 0, 0), ("top", 0, 1), ("top-right", 0, 2),
+            ("left",     1, 0), ("center", 1, 1), ("right",     1, 2),
+            ("bottom-left", 2, 0), ("bottom", 2, 1), ("bottom-right", 2, 2),
+        ]
+
+        self._btns = {}
+        for key, r, c in positions:
+            label = POSITION_LABELS[key]
+            btn = QPushButton(label)
+            btn.setFixedSize(90, 40)
+            btn.setCheckable(True)
+            btn.setChecked(key == current)
+            if key == current:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: #4488cc; color: white; "
+                    "font-weight: bold; border: 2px solid #66aaff; border-radius: 4px; }"
+                )
+            btn.clicked.connect(lambda checked, k=key: self._select(k))
+            grid.addWidget(btn, r, c)
+            self._btns[key] = btn
+
+        layout.addLayout(grid)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        btn_row.addWidget(btns)
+        layout.addLayout(btn_row)
+
+    def _select(self, key: str):
+        old = self._selected
+        self._selected = key
+        if old in self._btns:
+            self._btns[old].setChecked(False)
+            self._btns[old].setStyleSheet("")
+        self._btns[key].setChecked(True)
+        self._btns[key].setStyleSheet(
+            "QPushButton { background-color: #4488cc; color: white; "
+            "font-weight: bold; border: 2px solid #66aaff; border-radius: 4px; }"
+        )
+
+    @property
+    def position(self) -> str:
+        return self._selected
+
+
 class AppearanceDialog(QDialog):
     CONFIG_FILE = os.path.join(os.path.dirname(__file__), "molvector_config.json")
 
     def __init__(self, atom_scale, bond_width, bond_style, color_overrides,
-                 atom_border=True, bond_color="#444444", lighting_intensity=1.0,
+                 atom_border_mode="scaled", atom_border_scale=1.04, atom_border_width=2.0,
+                 bond_color="#444444", lighting_intensity=1.0,
                  light_position="top-left", live_callback=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Appearance")
         self.setMinimumWidth(400)
         self._live_callback = live_callback
         self._orig = (atom_scale, bond_width, bond_style,
-                      dict(color_overrides), atom_border, bond_color,
+                      dict(color_overrides), atom_border_mode, atom_border_scale,
+                      atom_border_width, bond_color,
                       lighting_intensity, light_position)
 
         layout = QVBoxLayout(self)
@@ -372,6 +448,7 @@ class AppearanceDialog(QDialog):
         self._ball_slider.setFixedWidth(160)
         self._ball_lbl = QLabel(f"{atom_scale:.2f}")
         self._ball_slider.valueChanged.connect(self._on_change)
+        self._ball_slider.installEventFilter(self)
         ball_row = QHBoxLayout()
         ball_row.addWidget(self._ball_slider)
         ball_row.addWidget(self._ball_lbl)
@@ -384,6 +461,7 @@ class AppearanceDialog(QDialog):
         self._bondw_slider.setFixedWidth(160)
         self._bondw_lbl = QLabel(f"{bond_width:.0f}")
         self._bondw_slider.valueChanged.connect(self._on_change)
+        self._bondw_slider.installEventFilter(self)
         bondw_row = QHBoxLayout()
         bondw_row.addWidget(self._bondw_slider)
         bondw_row.addWidget(self._bondw_lbl)
@@ -396,30 +474,29 @@ class AppearanceDialog(QDialog):
         self._lighting_slider.setFixedWidth(160)
         self._lighting_lbl = QLabel(f"{lighting_intensity:.2f}")
         self._lighting_slider.valueChanged.connect(self._on_change)
+        self._lighting_slider.installEventFilter(self)
         lighting_row = QHBoxLayout()
         lighting_row.addWidget(self._lighting_slider)
         lighting_row.addWidget(self._lighting_lbl)
         form.addRow("Lighting:", lighting_row)
 
         # Light position
-        self._light_pos_combo = QComboBox()
-        self._light_pos_combo.addItems([
-            "top-left", "top", "top-right",
-            "left", "right",
-            "bottom-left", "bottom", "bottom-right",
-        ])
-        self._light_pos_combo.setCurrentText(light_position)
-        self._light_pos_combo.currentTextChanged.connect(self._on_change)
-        form.addRow("Light Position:", self._light_pos_combo)
+        self._light_position = light_position
+        self._light_pos_btn = QPushButton(POSITION_LABELS.get(light_position, light_position))
+        self._light_pos_btn.setFixedWidth(160)
+        self._light_pos_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._light_pos_btn.clicked.connect(self._pick_light_position)
+        form.addRow("Light Position:", self._light_pos_btn)
 
         # Atom colours + border (init early so _on_change can access them)
         self._color_overrides = color_overrides
-        self._border_cb = QCheckBox("Show atom border")
-        self._border_cb.setChecked(atom_border)
+        self._border_mode = QComboBox()
+        self._border_mode.addItems(["None", "Scaled", "Constant"])
+        self._border_mode.setCurrentText(atom_border_mode.capitalize())
 
         # Bond style
         self._style_combo = QComboBox()
-        self._style_combo.addItems(["Gradient", "Unicolor", "Splitted"])
+        self._style_combo.addItems(["Splitted", "Unicolor", "Gradient"])
         self._bond_color = bond_color
         style_row = QHBoxLayout()
         style_row.addWidget(self._style_combo)
@@ -442,8 +519,20 @@ class AppearanceDialog(QDialog):
         form.addRow("Atom Colours:", self._edit_colors_btn)
 
         # Atom border
-        self._border_cb.toggled.connect(self._on_change)
-        form.addRow("Atom Border:", self._border_cb)
+        self._border_slider = QSlider(Qt.Orientation.Horizontal)
+        self._border_slider.setFixedWidth(160)
+        self._border_slider.valueChanged.connect(self._on_change)
+        self._border_slider.installEventFilter(self)
+
+        self._border_mode.setFixedWidth(90)
+        self._border_mode.currentTextChanged.connect(self._on_mode_change)
+        border_row = QHBoxLayout()
+        border_row.addWidget(self._border_mode)
+        border_row.addWidget(self._border_slider)
+        form.addRow("Border:", border_row)
+        self._form = form
+        self._set_border_slider_for_mode(atom_border_mode, atom_border_scale, atom_border_width)
+        self._update_border_visibility()
 
         layout.addLayout(form)
 
@@ -465,14 +554,57 @@ class AppearanceDialog(QDialog):
         btn_row.addWidget(dialog_btns)
         layout.addLayout(btn_row)
 
+    def _set_border_slider_for_mode(self, mode, scale, width):
+        if mode == "constant":
+            self._border_slider.setRange(1, 20)
+            self._border_slider.setValue(int(width))
+        else:
+            self._border_slider.setRange(100, 150)
+            self._border_slider.setValue(int(scale * 100))
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonDblClick:
+            cfg = self.load_config() or {}
+            if obj is self._ball_slider:
+                self._ball_slider.setValue(int(cfg.get("atom_scale", 0.7) * 100))
+            elif obj is self._bondw_slider:
+                self._bondw_slider.setValue(int(cfg.get("bond_width_px", 10)))
+            elif obj is self._lighting_slider:
+                self._lighting_slider.setValue(int(cfg.get("lighting_intensity", 1.0) * 100))
+            elif obj is self._border_slider:
+                mode = self._border_mode.currentText().lower()
+                if mode == "constant":
+                    self._border_slider.setValue(int(cfg.get("atom_border_width", 2)))
+                else:
+                    self._border_slider.setValue(int(cfg.get("atom_border_scale", 1.04) * 100))
+            return True
+        return super().eventFilter(obj, event)
+
+    def _on_mode_change(self):
+        mode = self._border_mode.currentText().lower()
+        if mode == "constant":
+            self._border_slider.setRange(1, 20)
+            self._border_slider.setValue(2)
+        else:
+            self._border_slider.setRange(100, 150)
+            self._border_slider.setValue(104)
+        self._on_change()
+
+    def _update_border_visibility(self):
+        visible = self._border_mode.currentText().lower() != "none"
+        if hasattr(self, '_border_slider'):
+            self._border_slider.setVisible(visible)
+
     def _on_change(self):
         self._ball_lbl.setText(f"{self.ball_scale:.2f}")
         self._bondw_lbl.setText(f"{self.bond_width:.0f}")
         self._lighting_lbl.setText(f"{self.lighting_intensity:.2f}")
-        if self._live_callback:
+        self._update_border_visibility()
+        if self._live_callback and hasattr(self, '_border_slider'):
             self._live_callback(
                 self.ball_scale, self.bond_width, self.bond_style,
-                self._color_overrides, self.atom_border, self.bond_color,
+                self._color_overrides, self.border_mode, self.border_scale,
+                self.border_width, self.bond_color,
                 self.lighting_intensity, self.light_position,
             )
 
@@ -501,8 +633,16 @@ class AppearanceDialog(QDialog):
         return float(self._bondw_slider.value())
 
     @property
-    def atom_border(self) -> bool:
-        return self._border_cb.isChecked()
+    def border_mode(self) -> str:
+        return self._border_mode.currentText().lower()
+
+    @property
+    def border_scale(self) -> float:
+        return self._border_slider.value() / 100.0
+
+    @property
+    def border_width(self) -> float:
+        return float(self._border_slider.value())
 
     @property
     def bond_style(self) -> str:
@@ -521,7 +661,14 @@ class AppearanceDialog(QDialog):
 
     @property
     def light_position(self) -> str:
-        return self._light_pos_combo.currentText()
+        return self._light_position
+
+    def _pick_light_position(self):
+        dlg = LightPositionDialog(self._light_position, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._light_position = dlg.position
+            self._light_pos_btn.setText(POSITION_LABELS.get(self._light_position, self._light_position))
+            self._on_change()
 
     def _edit_atom_colors(self):
         mol = self.parent()._canvas.molecule if self.parent() else None
@@ -540,7 +687,9 @@ class AppearanceDialog(QDialog):
             "bond_width_px": self.bond_width,
             "bond_style": self.bond_style,
             "bond_color": self.bond_color,
-            "atom_border": self.atom_border,
+            "atom_border_mode": self.border_mode,
+            "atom_border_scale": self.border_scale,
+            "atom_border_width": self.border_width,
             "lighting_intensity": self.lighting_intensity,
             "light_position": self.light_position,
             "color_overrides": self._color_overrides,
@@ -556,12 +705,14 @@ class AppearanceDialog(QDialog):
     def _restore_defaults(self):
         self._ball_slider.setValue(70)
         self._bondw_slider.setValue(10)
-        self._style_combo.setCurrentText("Unicolor")
+        self._style_combo.setCurrentText("Splitted")
         self._bond_color = "#444444"
         self._update_unicolor_btn()
         self._lighting_slider.setValue(100)
-        self._light_pos_combo.setCurrentText("top-left")
-        self._border_cb.setChecked(True)
+        self._light_position = "top-left"
+        self._light_pos_btn.setText("Top left")
+        self._border_mode.setCurrentText("Scaled")
+        self._border_slider.setValue(104)
         self._color_overrides = {}
         self._on_change()
 
@@ -1629,12 +1780,14 @@ class MoleculeCanvas(QSvgWidget):
         self.atom_scale     = 0.7
         self.bond_width_px  = 10.0
         self.background     = "#ffffff"
-        self.bond_style     = "gradient"
+        self.bond_style     = "splitted"
         self.bond_color     = "#444444"
-        self.atom_border    = True
+        self.atom_border_mode  = "scaled"
+        self.atom_border_scale = 1.04
+        self.atom_border_width = 2.0
         self.color_overrides: dict = {}
         self.lighting_intensity: float = 1.0
-        self.light_position: str = "top-left"
+        self.light_position: str = "Top left"
         self.animation_phase: float = 0.0
         self.animation_amplitude: float = 0.0
 
@@ -1749,7 +1902,9 @@ class MoleculeCanvas(QSvgWidget):
                 bond_color=self.bond_color,
                 background=self.background,
                 color_overrides=self.color_overrides or None,
-                atom_border=self.atom_border,
+                atom_border_mode=self.atom_border_mode,
+                atom_border_scale=self.atom_border_scale,
+                atom_border_width=self.atom_border_width,
                 lighting_intensity=self.lighting_intensity,
                 light_position=self.light_position,
                 active_vectors=self.active_vectors,
@@ -2758,6 +2913,7 @@ class MainWindow(QMainWindow):
         self._zoom_slider.setFixedWidth(120)
         self._zoom_slider.setToolTip("Zoom level (%)")
         self._zoom_slider.valueChanged.connect(self._on_zoom_change)
+        self._zoom_slider.installEventFilter(self)
         tb.addWidget(self._zoom_slider)
 
     # ── central layout ────────────────────────────────────────────────────────
@@ -3606,7 +3762,9 @@ class MainWindow(QMainWindow):
         self._canvas.bond_width_px = cfg.get("bond_width_px", self._canvas.bond_width_px)
         self._canvas.bond_style = cfg.get("bond_style", self._canvas.bond_style)
         self._canvas.bond_color = cfg.get("bond_color", self._canvas.bond_color)
-        self._canvas.atom_border = cfg.get("atom_border", self._canvas.atom_border)
+        self._canvas.atom_border_mode = cfg.get("atom_border_mode", self._canvas.atom_border_mode)
+        self._canvas.atom_border_scale = cfg.get("atom_border_scale", self._canvas.atom_border_scale)
+        self._canvas.atom_border_width = cfg.get("atom_border_width", self._canvas.atom_border_width)
         self._canvas.lighting_intensity = cfg.get("lighting_intensity", self._canvas.lighting_intensity)
         self._canvas.light_position = cfg.get("light_position", self._canvas.light_position)
         self._color_overrides = cfg.get("color_overrides", {})
@@ -3616,15 +3774,18 @@ class MainWindow(QMainWindow):
     def _edit_appearance(self):
         orig = (self._canvas.atom_scale, self._canvas.bond_width_px,
                 self._canvas.bond_style, dict(self._color_overrides),
-                self._canvas.atom_border, self._canvas.bond_color,
+                self._canvas.atom_border_mode, self._canvas.atom_border_scale,
+                self._canvas.atom_border_width, self._canvas.bond_color,
                 self._canvas.lighting_intensity, self._canvas.light_position)
 
-        def _live_update(ball, bw, style, colors, border, bcol, lighting, pos):
+        def _live_update(ball, bw, style, colors, border_mode, border_scale, border_width, bcol, lighting, pos):
             self._canvas.atom_scale = ball
             self._canvas.bond_width_px = bw
             self._canvas.bond_style = style
             self._canvas.bond_color = bcol
-            self._canvas.atom_border = border
+            self._canvas.atom_border_mode = border_mode
+            self._canvas.atom_border_scale = border_scale
+            self._canvas.atom_border_width = border_width
             self._canvas.lighting_intensity = lighting
             self._canvas.light_position = pos
             self._color_overrides = colors
@@ -3639,7 +3800,9 @@ class MainWindow(QMainWindow):
             self._canvas.bond_width_px = dlg.bond_width
             self._canvas.bond_style = dlg.bond_style
             self._canvas.bond_color = dlg.bond_color
-            self._canvas.atom_border = dlg.atom_border
+            self._canvas.atom_border_mode = dlg.border_mode
+            self._canvas.atom_border_scale = dlg.border_scale
+            self._canvas.atom_border_width = dlg.border_width
             self._canvas.lighting_intensity = dlg.lighting_intensity
             self._canvas.light_position = dlg.light_position
             self._color_overrides = dlg._color_overrides
@@ -3650,7 +3813,8 @@ class MainWindow(QMainWindow):
         else:
             (self._canvas.atom_scale, self._canvas.bond_width_px,
              self._canvas.bond_style, self._color_overrides,
-             self._canvas.atom_border, self._canvas.bond_color,
+             self._canvas.atom_border_mode, self._canvas.atom_border_scale,
+             self._canvas.atom_border_width, self._canvas.bond_color,
              self._canvas.lighting_intensity,
              self._canvas.light_position) = orig
             self._canvas.color_overrides = self._color_overrides
@@ -3742,6 +3906,12 @@ class MainWindow(QMainWindow):
         )
 
     # ── callbacks ─────────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonDblClick and obj is self._zoom_slider:
+            self._zoom_slider.setValue(100)
+            return True
+        return super().eventFilter(obj, event)
 
     def _on_zoom_change(self, value):
         self._canvas._zoom = value / 100.0

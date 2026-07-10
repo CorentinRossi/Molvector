@@ -955,6 +955,7 @@ LIGHT_POSITIONS = {
     "top":           ("0.50", "0.10",   0.00, -0.50,  0.87),
     "top-right":     ("0.67", "0.28",   0.34, -0.44,  0.83),
     "left":          ("0.10", "0.50",  -0.50,  0.00,  0.87),
+    "center":        ("0.50", "0.50",   0.00,  0.00,  1.00),
     "right":         ("0.90", "0.50",   0.50,  0.00,  0.87),
     "bottom-left":   ("0.33", "0.72",  -0.34,  0.44,  0.83),
     "bottom":        ("0.50", "0.90",   0.00,  0.50,  0.87),
@@ -1324,7 +1325,9 @@ def render_molecule(
     animation_amplitude: float = 0.0,
     bond_style: str = "gradient",
     bond_color: str = "#444444",
-    atom_border: bool = True,
+    atom_border_mode: str = "scaled",
+    atom_border_scale: float = 1.04,
+    atom_border_width: float = 2.0,
     lighting_intensity: float = 1.0,
     light_position: str = "top-left",
 ) -> str:
@@ -1736,8 +1739,12 @@ def render_molecule(
             if is_sel:
                 molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.35, fill="none", stroke="#00aaff", stroke_width=2.0, opacity="0.45"))
                 molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.15, fill="none", stroke="#44ddff", stroke_width=1.2, opacity="0.75"))
-            if atom_border:
-                molecule_group.add(dwg.circle(center=(ax,ay),r=ar*1.04,fill=dark,stroke="none"))
+            if atom_border_mode == "none":
+                pass
+            elif atom_border_mode == "constant":
+                molecule_group.add(dwg.circle(center=(ax,ay),r=ar+atom_border_width,fill=dark,stroke="none"))
+            else:  # "scaled"
+                molecule_group.add(dwg.circle(center=(ax,ay),r=ar*atom_border_scale,fill=dark,stroke="none"))
             molecule_group.add(dwg.circle(center=(ax,ay),r=ar,fill=f"url(#{gid})",stroke="none"))
         elif kind == "vector":
             _, x0, y0, x1, y1, col = item
