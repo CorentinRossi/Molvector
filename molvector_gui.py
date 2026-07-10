@@ -3,16 +3,30 @@ molvector_gui.py — Interactive 3D Molecule Viewer
 ==============================================
 PyQt6 GUI with full menu bar, appearance controls, and atom colour editor.
 
-Controls:
+Default controls:
   Left-drag    Rotate molecule
   Right-drag   Pan
   Scroll       Zoom
 
+Build mode (B):
+  Left-click   Add atom
+  Drag         Create bond
+  Click bond   Change bond order
+
+Selection mode (S):
+  Click        Select atom
+  Drag         Rectangle-select
+
+Align mode (A):
+  Click bond   Align molecule vertically
+
 Menus:
-  File    Open / Save SVG / Quit
-  Edit    Appearance (ball size, bond width) / Atom Colours / Reset Colors / Info
-  View    Preset orientations / Reset View / Background color
-  Help    About
+  File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
+  Edit          Appearance (ball size, bond width) / Atom Colours / Reset Colors / Info / Settings / Shortcuts
+  View          Reset View / Preset orientations / Background Colour
+  Calculations  Generate G16 Input / Calculate Rotational Constants / Calculation Results
+  Build         Build Mode / Selection Mode / Align Mode / Clean / Undo / Redo / Optimize / Clear All
+  Help          Open Test Molecule / About
 
 Dependencies:
     pip install PyQt6 numpy svgwrite
@@ -2590,6 +2604,7 @@ class MainWindow(QMainWindow):
         "undo": "Ctrl+Z",
         "redo": "Ctrl+Shift+Z",
         "calc_results": "Ctrl+M",
+        "open_test": "Ctrl+Alt+T",
     }
 
     def __init__(self):
@@ -2810,6 +2825,14 @@ class MainWindow(QMainWindow):
 
         # ── Help ──
         help_menu = mb.addMenu("&Help")
+        act_open_test = QAction("Open Test Molecule", self)
+        act_open_test.setShortcut("Ctrl+Alt+T")
+        act_open_test.triggered.connect(self._open_test_molecule)
+        help_menu.addAction(act_open_test)
+        self._shortcut_actions["open_test"] = act_open_test
+
+        help_menu.addSeparator()
+
         act_about = QAction("&About Molvector", self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
@@ -2970,10 +2993,10 @@ class MainWindow(QMainWindow):
         sl.addStretch()
 
         # Hint
-        hint = QLabel("Drag  rotate\nRight-drag  pan\nScroll  zoom")
-        hint.setObjectName("hint")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sl.addWidget(hint)
+        self._hint = QLabel("Drag  rotate\nRight-drag  pan\nScroll  zoom")
+        self._hint.setObjectName("hint")
+        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sl.addWidget(self._hint)
 
         root.addWidget(sidebar)
 
@@ -3546,6 +3569,20 @@ class MainWindow(QMainWindow):
 
     # ── Tool mode actions ────────────────────────────────────────────────────
 
+    def _update_status_for_mode(self):
+        if self._canvas.build_mode:
+            self._status.showMessage("Build: Left-click add atom · Drag to bond · Click bond change order · Scroll zoom")
+            self._hint.setText("Left-click  add atom\nDrag  bond atoms\nClick bond  change order")
+        elif self._canvas.selection_mode:
+            self._status.showMessage("Selection: Click select atom · Drag rectangle-select · Scroll zoom")
+            self._hint.setText("Click  select atom\nDrag  rectangle-select")
+        elif self._canvas.align_mode:
+            self._status.showMessage("Align: Click bond to align molecule · Scroll zoom")
+            self._hint.setText("Click bond  align molecule")
+        else:
+            self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
+            self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
+
     def _toggle_selection_mode(self, enabled: bool):
         self._act_select_btn.setChecked(enabled)
         self._act_select_toggle.setChecked(enabled)
@@ -3557,11 +3594,10 @@ class MainWindow(QMainWindow):
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
             self._canvas.align_mode = False
-            self._status.showMessage("Selection Mode: Click atoms to select, drag to rectangle-select")
         else:
             self._canvas.selected_atoms.clear()
             self._canvas.request_render()
-            self._status.showMessage("Selection Mode Off")
+        self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _toggle_build_mode(self, enabled: bool):
@@ -3575,7 +3611,7 @@ class MainWindow(QMainWindow):
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
         self._canvas.build_mode = enabled
-        self._status.showMessage("Build Mode Active: Click to add, Drag to bond, Click bond to change order" if enabled else "Build Mode Off")
+        self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _toggle_align_mode(self, enabled: bool):
@@ -3589,7 +3625,7 @@ class MainWindow(QMainWindow):
         self._act_align_toggle.setChecked(enabled)
         self._act_align_btn.setChecked(enabled)
         self._canvas.align_mode = enabled
-        self._status.showMessage("Align Mode: Click a bond to align it vertically" if enabled else "Align Mode Off")
+        self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
     def _on_build_elem_change(self, elem: str):
@@ -3892,6 +3928,11 @@ class MainWindow(QMainWindow):
             self._canvas.request_render()
 
     # ── Help ──────────────────────────────────────────────────────────────────
+
+    def _open_test_molecule(self):
+        test_path = os.path.join(os.path.dirname(__file__), "test_files", "c5h6.xyz")
+        if os.path.isfile(test_path):
+            self._load_and_display(test_path)
 
     def _show_about(self):
         QMessageBox.about(self, "About Molvector",
