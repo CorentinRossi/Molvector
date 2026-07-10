@@ -18,7 +18,8 @@ Selection mode (S):
   Drag         Rectangle-select
 
 Align mode (A):
-  Click bond   Align molecule vertically
+  Click bond       Align molecule vertically
+  Ctrl+click bond  Align molecule horizontally
 
 Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
@@ -2169,9 +2170,12 @@ class MoleculeCanvas(QSvgWidget):
                 if norm > 1e-10:
                     v_local_hat = v_local / norm
                     v_view = self._rot @ v_local_hat
-                    target = np.array([0.0, 1.0, 0.0])
+                    if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                        target = np.array([1.0, 0.0, 0.0])
+                    else:
+                        target = np.array([0.0, 1.0, 0.0])
                     dot = np.dot(v_view, target)
-                    # Pick the closer vertical direction to avoid large flips
+                    # Pick the closer direction to avoid large flips
                     if dot < 0:
                         target = -target
                         dot = -dot
@@ -3577,8 +3581,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Selection: Click select atom · Drag rectangle-select · Scroll zoom")
             self._hint.setText("Click  select atom\nDrag  rectangle-select")
         elif self._canvas.align_mode:
-            self._status.showMessage("Align: Click bond to align molecule · Scroll zoom")
-            self._hint.setText("Click bond  align molecule")
+            self._status.showMessage("Align: Click bond align vertically · Ctrl+click align horizontally · Scroll zoom")
+            self._hint.setText("Click bond  align vertically\nCtrl+click  align horizontally")
         else:
             self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
             self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
