@@ -1823,6 +1823,7 @@ class MoleculeCanvas(QSvgWidget):
         self._rot  = np.eye(3)
         self._zoom = 1.0
         self._pan  = np.array([0.0, 0.0])
+        self._axes_ref = np.eye(3)
         self._drag_start: QPoint | None = None
         self._drag_mode = "none"
 
@@ -1937,6 +1938,10 @@ class MoleculeCanvas(QSvgWidget):
         self._pan  = np.array([0.0, 0.0])
         self.request_render()
 
+    def reset_xyz_axes(self):
+        self._axes_ref = self._rot.copy()
+        self.request_render()
+
     def set_preset(self, rx, ry, rz):
         from molvector_render import rotation_matrix
         self._rot  = rotation_matrix(math.radians(rx), math.radians(ry), math.radians(rz))
@@ -2013,6 +2018,7 @@ class MoleculeCanvas(QSvgWidget):
                 show_principal_axes=self.show_principal_axes,
                 axes_position=self.axes_position,
                 principal_axes_position=self.principal_axes_position,
+                axes_rot_override=self._rot @ np.linalg.inv(self._axes_ref),
                 active_vectors=self.active_vectors,
                 animation_phase=self.animation_phase,
                 animation_amplitude=self.animation_amplitude,
@@ -2823,6 +2829,13 @@ class MainWindow(QMainWindow):
         act_reset_view.triggered.connect(lambda: self._canvas.reset_view())
         view_menu.addAction(act_reset_view)
         self._shortcut_actions["reset_view"] = act_reset_view
+
+        act_reset_xyz = QAction("Reset XYZ &Axes", self)
+        act_reset_xyz.setShortcut("Shift+R")
+        act_reset_xyz.triggered.connect(lambda: self._canvas.reset_xyz_axes())
+        view_menu.addAction(act_reset_xyz)
+        self._shortcut_actions["reset_xyz_axes"] = act_reset_xyz
+
         view_menu.addSeparator()
 
         presets_menu = view_menu.addMenu("&Preset Orientation")
@@ -2840,7 +2853,7 @@ class MainWindow(QMainWindow):
             presets_menu.addAction(a)
 
         presets_menu.addSeparator()
-        for idx, label in [(0, "Along A Axis"), (1, "Along B Axis"), (2, "Along C Axis")]:
+        for idx, label in [(0, "BC plane"), (1, "AC plane"), (2, "AB plane")]:
             a = QAction(label, self)
             a.triggered.connect(lambda _, i=idx: self._canvas.set_principal_axis_preset(i))
             presets_menu.addAction(a)

@@ -1335,6 +1335,7 @@ def render_molecule(
     show_principal_axes: bool = False,
     axes_position: str = "bottom-left",
     principal_axes_position: str = "bottom-left",
+    axes_rot_override: Optional[np.ndarray] = None,
 ) -> str:
 
     rot = rot_matrix_override if rot_matrix_override is not None \
@@ -1778,6 +1779,7 @@ def render_molecule(
         ))
 
     if show_axes and not export_mode:
+        _ax_rot = axes_rot_override if axes_rot_override is not None else rot
         axis_len = 17.0
         margin = 30
         _ax_pos = axes_position.lower().replace(" ", "-")
@@ -1794,7 +1796,7 @@ def render_molecule(
             (np.array([0,1,0]), "#44cc44", "Y"),
             (np.array([0,0,1]), "#4488ff", "Z"),
         ]:
-            rv = rot @ vec
+            rv = _ax_rot @ vec
             ex = origin_x + rv[0] * axis_len
             ey = origin_y - rv[1] * axis_len
             dwg.add(dwg.line(start=(origin_x, origin_y), end=(ex, ey),
