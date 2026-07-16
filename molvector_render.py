@@ -1330,6 +1330,10 @@ def render_molecule(
     atom_border_width: float = 2.0,
     lighting_intensity: float = 1.0,
     light_position: str = "top-left",
+    show_axes: bool = False,
+    show_principal_axes: bool = False,
+    axes_position: str = "bottom-left",
+    principal_axes_position: str = "bottom-left",
 ) -> str:
 
     rot = rot_matrix_override if rot_matrix_override is not None \
@@ -1771,5 +1775,67 @@ def render_molecule(
             font_size=15,font_family="'Courier New',monospace",
             fill="#88ccff",opacity=0.75,
         ))
+
+    if show_axes and not export_mode:
+        axis_len = 17.0
+        margin = 30
+        _ax_pos = axes_position.lower().replace(" ", "-")
+        if _ax_pos == "bottom-right":
+            origin_x, origin_y = canvas_w - margin, canvas_h - margin
+        elif _ax_pos == "top-left":
+            origin_x, origin_y = margin, margin
+        elif _ax_pos == "top-right":
+            origin_x, origin_y = canvas_w - margin, margin
+        else:
+            origin_x, origin_y = margin, canvas_h - margin
+        for vec, col, lbl in [
+            (np.array([1,0,0]), "#ff4444", "X"),
+            (np.array([0,1,0]), "#44cc44", "Y"),
+            (np.array([0,0,1]), "#4488ff", "Z"),
+        ]:
+            rv = rot @ vec
+            ex = origin_x + rv[0] * axis_len
+            ey = origin_y - rv[1] * axis_len
+            dwg.add(dwg.line(start=(origin_x, origin_y), end=(ex, ey),
+                             stroke="#222222", stroke_width=1.0, stroke_linecap="round"))
+            tx = origin_x + rv[0] * (axis_len + 6) - 3
+            ty = origin_y - rv[1] * (axis_len + 6) + 3
+            dwg.add(dwg.text(lbl, insert=(tx, ty),
+                             font_size=8, font_family="'Courier New',monospace",
+                             fill=col, font_weight="bold"))
+
+    if show_principal_axes and not export_mode and len(mol.atoms) >= 2:
+        coords = np.array([[a.x, a.y, a.z] for a in mol.atoms])
+        masses = np.array([ATOMIC_MASSES.get(a.element, 0.0) for a in mol.atoms])
+        _, eigvecs = strudel.diagonalize_I_tensor(coords, masses)
+        axis_len = 17.0
+        margin = 30
+        _pa_pos = principal_axes_position.lower().replace(" ", "-")
+        if _pa_pos == "bottom-right":
+            origin_x, origin_y = canvas_w - margin, canvas_h - margin
+        elif _pa_pos == "top-left":
+            origin_x, origin_y = margin, margin
+        elif _pa_pos == "top-right":
+            origin_x, origin_y = canvas_w - margin, margin
+        else:
+            origin_x, origin_y = margin, canvas_h - margin
+        for i, col, lbl in [
+            (0, "#ff8800", "A"),
+            (1, "#cc44cc", "B"),
+            (2, "#00bbbb", "C"),
+        ]:
+            vec = eigvecs[:, i]
+            rv = rot @ vec
+            ex = origin_x + rv[0] * axis_len
+            ey = origin_y - rv[1] * axis_len
+            dwg.add(dwg.line(start=(origin_x, origin_y), end=(ex, ey),
+                             stroke="#222222", stroke_width=1.0, stroke_linecap="round",
+                             stroke_dasharray="3,2"))
+            tx = origin_x + rv[0] * (axis_len + 6) - 3
+            ty = origin_y - rv[1] * (axis_len + 6) + 3
+            dwg.add(dwg.text(lbl, insert=(tx, ty),
+                             font_size=8, font_family="'Courier New',monospace",
+                             fill=col, font_weight="bold"))
+
     dwg.save()
     return output_path

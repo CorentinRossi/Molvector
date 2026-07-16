@@ -440,15 +440,19 @@ class AppearanceDialog(QDialog):
     def __init__(self, atom_scale, bond_width, bond_style, color_overrides,
                  atom_border_mode="scaled", atom_border_scale=1.04, atom_border_width=2.0,
                  bond_color="#444444", lighting_intensity=1.0,
-                 light_position="top-left", live_callback=None, parent=None):
+                 light_position="top-left", show_axes=False, show_principal_axes=False,
+                 axes_position="bottom-left", principal_axes_position="bottom-left",
+                 live_callback=None, axes_live_callback=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Appearance")
         self.setMinimumWidth(400)
         self._live_callback = live_callback
+        self._axes_live_callback = axes_live_callback
         self._orig = (atom_scale, bond_width, bond_style,
                       dict(color_overrides), atom_border_mode, atom_border_scale,
                       atom_border_width, bond_color,
-                      lighting_intensity, light_position)
+                      lighting_intensity, light_position, show_axes, show_principal_axes,
+                      axes_position, principal_axes_position)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
@@ -549,6 +553,30 @@ class AppearanceDialog(QDialog):
         self._set_border_slider_for_mode(atom_border_mode, atom_border_scale, atom_border_width)
         self._update_border_visibility()
 
+        self._show_axes_cb = QCheckBox("Show XYZ Axes")
+        self._show_axes_cb.setChecked(show_axes)
+        self._show_axes_cb.toggled.connect(self._on_axes_change)
+        form.addRow("Overlay:", self._show_axes_cb)
+
+        self._axes_pos_combo = QComboBox()
+        self._axes_pos_combo.addItems(["Bottom left", "Bottom right", "Top left", "Top right"])
+        self._axes_pos_combo.setCurrentText(axes_position.replace("-", " ").title())
+        self._axes_pos_combo.setFixedWidth(120)
+        self._axes_pos_combo.currentIndexChanged.connect(self._on_axes_change)
+        form.addRow("Position:", self._axes_pos_combo)
+
+        self._show_principal_axes_cb = QCheckBox("Show A/B/C Axes")
+        self._show_principal_axes_cb.setChecked(show_principal_axes)
+        self._show_principal_axes_cb.toggled.connect(self._on_axes_change)
+        form.addRow("", self._show_principal_axes_cb)
+
+        self._principal_axes_pos_combo = QComboBox()
+        self._principal_axes_pos_combo.addItems(["Bottom right", "Bottom left", "Top left", "Top right"])
+        self._principal_axes_pos_combo.setCurrentText(principal_axes_position.replace("-", " ").title())
+        self._principal_axes_pos_combo.setFixedWidth(120)
+        self._principal_axes_pos_combo.currentIndexChanged.connect(self._on_axes_change)
+        form.addRow("Position:", self._principal_axes_pos_combo)
+
         layout.addLayout(form)
 
         # Bottom buttons
@@ -627,6 +655,13 @@ class AppearanceDialog(QDialog):
         self._unicolor_btn.setVisible(text == "Unicolor")
         self._on_change()
 
+    def _on_axes_change(self):
+        if self._axes_live_callback:
+            self._axes_live_callback(
+                self.show_axes, self.show_principal_axes,
+                self.axes_position, self.principal_axes_position,
+            )
+
     def _pick_unicolor(self):
         col = QColorDialog.getColor(QColor(self._bond_color), self, "Choose Bond Color")
         if col.isValid():
@@ -678,6 +713,22 @@ class AppearanceDialog(QDialog):
     def light_position(self) -> str:
         return self._light_position
 
+    @property
+    def show_axes(self) -> bool:
+        return self._show_axes_cb.isChecked()
+
+    @property
+    def show_principal_axes(self) -> bool:
+        return self._show_principal_axes_cb.isChecked()
+
+    @property
+    def axes_position(self) -> str:
+        return self._axes_pos_combo.currentText().lower().replace(" ", "-")
+
+    @property
+    def principal_axes_position(self) -> str:
+        return self._principal_axes_pos_combo.currentText().lower().replace(" ", "-")
+
     def _pick_light_position(self):
         dlg = LightPositionDialog(self._light_position, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -708,6 +759,10 @@ class AppearanceDialog(QDialog):
             "lighting_intensity": self.lighting_intensity,
             "light_position": self.light_position,
             "color_overrides": self._color_overrides,
+            "show_axes": self.show_axes,
+            "show_principal_axes": self.show_principal_axes,
+            "axes_position": self.axes_position,
+            "principal_axes_position": self.principal_axes_position,
         }
         try:
             with open(self.CONFIG_FILE, "w") as f:
@@ -729,6 +784,10 @@ class AppearanceDialog(QDialog):
         self._border_mode.setCurrentText("Scaled")
         self._border_slider.setValue(104)
         self._color_overrides = {}
+        self._show_axes_cb.setChecked(False)
+        self._show_principal_axes_cb.setChecked(False)
+        self._axes_pos_combo.setCurrentText("Bottom left")
+        self._principal_axes_pos_combo.setCurrentText("Bottom right")
         self._on_change()
 
     @staticmethod
@@ -1803,6 +1862,10 @@ class MoleculeCanvas(QSvgWidget):
         self.color_overrides: dict = {}
         self.lighting_intensity: float = 1.0
         self.light_position: str = "Top left"
+        self.show_axes: bool = False
+        self.show_principal_axes: bool = False
+        self.axes_position: str = "bottom-left"
+        self.principal_axes_position: str = "bottom-right"
         self.animation_phase: float = 0.0
         self.animation_amplitude: float = 0.0
 
@@ -1946,6 +2009,10 @@ class MoleculeCanvas(QSvgWidget):
                 atom_border_width=self.atom_border_width,
                 lighting_intensity=self.lighting_intensity,
                 light_position=self.light_position,
+                show_axes=self.show_axes,
+                show_principal_axes=self.show_principal_axes,
+                axes_position=self.axes_position,
+                principal_axes_position=self.principal_axes_position,
                 active_vectors=self.active_vectors,
                 animation_phase=self.animation_phase,
                 animation_amplitude=self.animation_amplitude,
@@ -3839,6 +3906,10 @@ class MainWindow(QMainWindow):
         self._canvas.light_position = cfg.get("light_position", self._canvas.light_position)
         self._color_overrides = cfg.get("color_overrides", {})
         self._canvas.color_overrides = self._color_overrides
+        self._canvas.show_axes = cfg.get("show_axes", self._canvas.show_axes)
+        self._canvas.show_principal_axes = cfg.get("show_principal_axes", self._canvas.show_principal_axes)
+        self._canvas.axes_position = cfg.get("axes_position", self._canvas.axes_position)
+        self._canvas.principal_axes_position = cfg.get("principal_axes_position", self._canvas.principal_axes_position)
         self._canvas.request_render()
 
     def _edit_appearance(self):
@@ -3846,7 +3917,9 @@ class MainWindow(QMainWindow):
                 self._canvas.bond_style, dict(self._color_overrides),
                 self._canvas.atom_border_mode, self._canvas.atom_border_scale,
                 self._canvas.atom_border_width, self._canvas.bond_color,
-                self._canvas.lighting_intensity, self._canvas.light_position)
+                self._canvas.lighting_intensity, self._canvas.light_position,
+                self._canvas.show_axes, self._canvas.show_principal_axes,
+                self._canvas.axes_position, self._canvas.principal_axes_position)
 
         def _live_update(ball, bw, style, colors, border_mode, border_scale, border_width, bcol, lighting, pos):
             self._canvas.atom_scale = ball
@@ -3864,7 +3937,15 @@ class MainWindow(QMainWindow):
                 self._legend.update_for(self._canvas.molecule, colors)
             self._canvas.request_render()
 
-        dlg = AppearanceDialog(*orig, live_callback=_live_update, parent=self)
+        def _axes_live_update(show_xyz, show_abc, xyz_pos, abc_pos):
+            self._canvas.show_axes = show_xyz
+            self._canvas.show_principal_axes = show_abc
+            self._canvas.axes_position = xyz_pos
+            self._canvas.principal_axes_position = abc_pos
+            self._canvas.request_render()
+
+        dlg = AppearanceDialog(*orig, live_callback=_live_update,
+                               axes_live_callback=_axes_live_update, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._canvas.atom_scale = dlg.ball_scale
             self._canvas.bond_width_px = dlg.bond_width
@@ -3875,6 +3956,10 @@ class MainWindow(QMainWindow):
             self._canvas.atom_border_width = dlg.border_width
             self._canvas.lighting_intensity = dlg.lighting_intensity
             self._canvas.light_position = dlg.light_position
+            self._canvas.show_axes = dlg.show_axes
+            self._canvas.show_principal_axes = dlg.show_principal_axes
+            self._canvas.axes_position = dlg.axes_position
+            self._canvas.principal_axes_position = dlg.principal_axes_position
             self._color_overrides = dlg._color_overrides
             self._canvas.color_overrides = dlg._color_overrides
             if self._canvas.molecule:
@@ -3886,7 +3971,11 @@ class MainWindow(QMainWindow):
              self._canvas.atom_border_mode, self._canvas.atom_border_scale,
              self._canvas.atom_border_width, self._canvas.bond_color,
              self._canvas.lighting_intensity,
-             self._canvas.light_position) = orig
+             self._canvas.light_position,
+             self._canvas.show_axes,
+             self._canvas.show_principal_axes,
+             self._canvas.axes_position,
+             self._canvas.principal_axes_position) = orig
             self._canvas.color_overrides = self._color_overrides
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, self._color_overrides)
