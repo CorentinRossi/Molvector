@@ -1156,44 +1156,156 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
     return int(max_steps)
 
 
-def _kekule_prepass(mol: "Molecule", obmol) -> None:
+def generate_inchi(mol: Molecule) -> Optional[str]:
     """
-    Convert Molvector order-5 (resonance) bonds into alternating
-    single/double (Kekulé pattern) for OpenBabel.
+    Generate an InChI identifier for *mol* using RDKit (preferred) or
+    OpenBabel (fallback).
 
-    For each connected component:
+    Returns the InChI string on success, or ``None`` if conversion fails.
+    """
+    if not mol.atoms:
+        return None
+
+    try:
+        return _generate_inchi_rdkit(mol)
+    except Exception:
+        pass
+
+    if HAS_OPENBABEL:
+        try:
+            return _generate_inchi_openbabel(mol)
+        except Exception:
+            pass
+
+    return None
+
+
+_EXPECTED_VALENCE: Dict[str, int] = {
+    "H": 1, "He": 2, "Li": 1, "Be": 2, "B": 3, "C": 4, "N": 4, "O": 2,
+    "F": 1, "Ne": 8, "Na": 1, "Mg": 2, "Al": 3, "Si": 4, "P": 5, "S": 6,
+    "Cl": 1, "Ar": 8, "K": 1, "Ca": 2, "Fe": 3, "Ni": 2, "Cu": 2,
+    "Zn": 2, "Br": 1, "I": 1, "Au": 3, "Hg": 2,
+}
+
+
+def check_valence_issues(mol: Molecule) -> List[str]:
+    """Return a list of valence warning strings for atoms in *mol*."""
+    issues: List[str] = []
+    for idx, a in enumerate(mol.atoms):
+        bond_sum = 0.0
+        for b in mol.bonds:
+            if b.i == idx or b.j == idx:
+                bond_sum += b.order
+        expected = _EXPECTED_VALENCE.get(a.element, 4)
+        if bond_sum > expected:
+            issues.append(
+                f"{a.element}#{idx + 1}: valence {int(bond_sum)} exceeds expected {expected}"
+            )
+    return issues
+
+
+def _generate_inchi_rdkit(mol: Molecule) -> Optional[str]:
+    from rdkit import Chem
+    from rdkit.Geometry import Point3D
+
+    kek = _kekule_orders(mol)
+
+    rw = Chem.RWMol()
+    for a in mol.atoms:
+        rw.AddAtom(Chem.Atom(a.element))
+    for b in mol.bonds:
+        if b.order == 5:
+            k = (b.i, b.j) if b.i < b.j else (b.j, b.i)
+            order = kek.get(k, 1)
+        else:
+            order = b.order
+        btype = {1: Chem.BondType.SINGLE, 2: Chem.BondType.DOUBLE,
+                 3: Chem.BondType.TRIPLE}.get(order, Chem.BondType.SINGLE)
+        rw.AddBond(b.i, b.j, btype)
+
+    if mol.charge != 0:
+        heavy = next((i for i, a in enumerate(mol.atoms) if a.element != "H"), 0)
+        rw.GetAtomWithIdx(heavy).SetFormalCharge(mol.charge)
+
+    conf = Chem.Conformer(len(mol.atoms))
+    for i, a in enumerate(mol.atoms):
+        conf.SetAtomPosition(i, Point3D(a.x, a.y, a.z))
+    rw.AddConformer(conf, assignId=True)
+
+    inchi = Chem.MolToInchi(rw)
+    if inchi:
+        return inchi
+    return None
+
+
+def _generate_inchi_openbabel(mol: Molecule) -> Optional[str]:
+    from openbabel import openbabel as ob
+
+    _SYM_TO_Z = {
+        "H":1, "He":2, "Li":3, "Be":4, "B":5, "C":6, "N":7, "O":8, "F":9,
+        "Ne":10, "Na":11, "Mg":12, "Al":13, "Si":14, "P":15, "S":16,
+        "Cl":17, "Ar":18, "K":19, "Ca":20, "Fe":26, "Ni":28, "Cu":29,
+        "Zn":30, "Br":35, "I":53, "Au":79, "Hg":80,
+    }
+
+    obmol = ob.OBMol()
+    obmol.SetDimension(3)
+
+    for a in mol.atoms:
+        oba = obmol.NewAtom()
+        oba.SetAtomicNum(_SYM_TO_Z.get(a.element, 6))
+        oba.SetVector(a.x, a.y, a.z)
+
+    _kekule_prepass(mol, obmol)
+
+    for b in mol.bonds:
+        if b.order == 5:
+            continue
+        obmol.AddBond(b.i + 1, b.j + 1, b.order)
+
+    if mol.charge != 0:
+        obmol.SetTotalCharge(mol.charge)
+
+    obmol.ConnectTheDots()
+    obmol.PerceiveBondOrders()
+
+    conv = ob.OBConversion()
+    conv.SetOutFormat("inchi")
+    inchi = conv.WriteString(obmol).strip()
+    return inchi if inchi else None
+
+
+def _kekule_orders(mol: "Molecule") -> Dict[Tuple[int, int], int]:
+    """
+    Return a Kekulé bond-order map for resonance (order-5) bonds.
+
+    For each connected component of resonance bonds:
       * **Simple cycle** (every node degree 2): walk around assigning
         alternating bond orders (2, 1, 2, 1, …).
-      * **Otherwise** (fused rings, branched): fall back to all-single bonds
-        (still planar, still works with MMFF94s; bonds ≈1.45 Å instead of
-         the delocalised 1.395 Å — acceptable for a builder tool).
+      * **Otherwise** (fused rings, branched): fall back to all-single bonds.
 
-    OpenBabel's MMFF94s auto‑detects aromaticity from the alternating
-    pattern and uses proper delocalised parameters.
+    Returns a dict ``{(i, j): bond_order}`` where ``i < j``.
     """
     res_bonds = [(b.i, b.j) for b in mol.bonds if b.order == 5]
     if not res_bonds:
-        return
+        return {}
 
-    # Build adjacency
-    adj = {}
+    adj: Dict[int, set] = {}
     for i, j in res_bonds:
         adj.setdefault(i, set()).add(j)
         adj.setdefault(j, set()).add(i)
 
-    def key(a, b):
+    def key(a: int, b: int) -> Tuple[int, int]:
         return (a, b) if a < b else (b, a)
 
-    orders = {}
+    orders: Dict[Tuple[int, int], int] = {}
 
-    # Process each connected component
-    visited = set()
+    visited: set = set()
     for start in adj:
         if start in visited:
             continue
 
-        # BFS to collect the whole component
-        comp_nodes = []
+        comp_nodes: List[int] = []
         q = [start]
         visited.add(start)
         while q:
@@ -1204,12 +1316,10 @@ def _kekule_prepass(mol: "Molecule", obmol) -> None:
                     visited.add(nb)
                     q.append(nb)
 
-        # Check if this component is a simple cycle
         is_simple_cycle = all(len(adj[n]) == 2 for n in comp_nodes) and len(comp_nodes) >= 3
 
         if is_simple_cycle:
-            # Walk around the cycle and assign alternating orders
-            cycle = []
+            cycle: List[int] = []
             prev = -1
             cur = comp_nodes[0]
             while True:
@@ -1227,14 +1337,38 @@ def _kekule_prepass(mol: "Molecule", obmol) -> None:
                     a, b = cycle[idx], cycle[(idx + 1) % len(cycle)]
                     k = key(a, b)
                     if k not in orders:
-                        orders[k] = 2 if idx % 2 == 0 else 1
+                        if idx < len(cycle) - 1:
+                            orders[k] = 2 if idx % 2 == 0 else 1
+                        else:
+                            orders[k] = 1
         else:
-            # Not a simple cycle — use all single bonds
             for a, b in res_bonds:
                 if a in comp_nodes or b in comp_nodes:
                     k = key(a, b)
                     if k not in orders:
                         orders[k] = 1
+
+    return orders
+
+
+def _kekule_prepass(mol: "Molecule", obmol) -> None:
+    """
+    Convert Molvector order-5 (resonance) bonds into alternating
+    single/double (Kekulé pattern) for OpenBabel.
+
+    For each connected component:
+      * **Simple cycle** (every node degree 2): walk around assigning
+        alternating bond orders (2, 1, 2, 1, …).
+      * **Otherwise** (fused rings, branched): fall back to all-single bonds
+        (still planar, still works with MMFF94s; bonds ≈1.45 Å instead of
+         the delocalised 1.395 Å — acceptable for a builder tool).
+
+    OpenBabel's MMFF94s auto-detects aromaticity from the alternating
+    pattern and uses proper delocalised parameters.
+    """
+    orders = _kekule_orders(mol)
+    if not orders:
+        return
 
     for (i, j), bo in orders.items():
         obmol.AddBond(i + 1, j + 1, bo)

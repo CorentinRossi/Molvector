@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData, QEvent
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence, QDesktopServices
 from PyQt6.QtGui import QDrag
 
 try:
@@ -72,7 +72,7 @@ from molvector_render import (
     chemical_formula, molecular_mass, VibrationalMode, ExcitedState,
     save_xyz, save_gaussian_input, save_pdb, save_mol, project_molecule,
     Atom, Bond,
-    optimize_geometry, HAS_OPENBABEL, calculate_rotational_constants,
+    optimize_geometry, HAS_OPENBABEL, calculate_rotational_constants, generate_inchi, check_valence_issues,
 )
 
 # ── platform-aware shortcut modifier prefix ──────────────────────────────────
@@ -2826,6 +2826,14 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(act_info)
         self._shortcut_actions["info"] = act_info
 
+        act_inchi = QAction("&InChI…", self)
+        act_inchi.triggered.connect(self._show_inchi)
+        edit_menu.addAction(act_inchi)
+
+        act_charge = QAction("Edit &Charge…", self)
+        act_charge.triggered.connect(self._edit_charge)
+        edit_menu.addAction(act_charge)
+
         edit_menu.addSeparator()
 
         act_settings = QAction("&Settings…", self)
@@ -3521,6 +3529,100 @@ class MainWindow(QMainWindow):
         btn.rejected.connect(dlg.reject)
         layout.addWidget(btn)
         dlg.exec()
+
+    def _show_inchi(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+
+        inchi = generate_inchi(mol)
+        if inchi is None:
+            QMessageBox.warning(
+                self, "InChI Error",
+                "Failed to generate InChI for this molecule.\n"
+                "Ensure RDKit is installed:  pip install rdkit"
+            )
+            return
+
+        formula = chemical_formula(mol)
+        warnings = check_valence_issues(mol)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"InChI \u2014 {formula}")
+        dlg.setMinimumWidth(480)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(6)
+
+        lbl = QLabel("InChI:")
+        lbl.setStyleSheet("font-weight: bold;")
+        layout.addWidget(lbl)
+
+        le = QLineEdit(inchi)
+        le.setReadOnly(True)
+        layout.addWidget(le)
+
+        copy_btn = QPushButton("Copy to Clipboard")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(inchi))
+        layout.addWidget(copy_btn)
+
+        nist_btn = QPushButton("Search in NIST WebBook")
+        from urllib.parse import quote
+        encoded = quote(inchi, safe='')
+        nist_url = QUrl(f"https://webbook.nist.gov/cgi/cbook.cgi?InChI={encoded}&Units=SI")
+        nist_btn.clicked.connect(lambda: QDesktopServices.openUrl(nist_url))
+        layout.addWidget(nist_btn)
+
+        if warnings:
+            layout.addSpacing(6)
+            warn_lbl = QLabel("Valence warnings:")
+            warn_lbl.setStyleSheet("font-weight: bold; color: #cc4444;")
+            layout.addWidget(warn_lbl)
+
+            warn_text = QLabel("\n".join(warnings))
+            warn_text.setStyleSheet("color: #cc4444;")
+            warn_text.setWordWrap(True)
+            layout.addWidget(warn_text)
+
+        layout.addSpacing(6)
+        close_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_btn.rejected.connect(dlg.reject)
+        layout.addWidget(close_btn)
+        dlg.exec()
+
+    def _edit_charge(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Charge")
+        dlg.setMinimumWidth(240)
+        layout = QVBoxLayout(dlg)
+
+        lbl = QLabel("Molecular charge:")
+        layout.addWidget(lbl)
+
+        spin = QSpinBox()
+        spin.setRange(-10, 10)
+        spin.setValue(mol.charge)
+        spin.setMinimumWidth(90)
+        layout.addWidget(spin)
+
+        layout.addSpacing(6)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            mol.charge = spin.value()
+            self._update_info_panel(mol)
+            self._canvas.update()
+            self._status.showMessage(f"Charge set to {mol.charge}")
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
