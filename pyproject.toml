@@ -10,10 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-    "numpy",
+    "numpy>=1.21",
     "svgwrite",
-    "PyQt6",
-	"mol_strudel"
+    "PyQt6>=6.5",
+    "mol_strudel",
 ]
 
 [project.optional-dependencies]
@@ -24,8 +24,13 @@ openbabel = ["openbabel"]
 Homepage = "https://github.com/CorentinRossi/Molvector"
 
 [project.scripts]
-molvector = "molvector_gui:main"
+molvector = "molvector:main"
+
+[tool.setuptools.packages.find]
+include = ["molvector*"]
+
+[tool.setuptools.package-data]
+molvector = ["assets/**/*"]
 
 [tool.setuptools]
-packages = []
-py-modules = ["molvector_gui", "molvector_render"]
+zip-safe = false

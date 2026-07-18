@@ -63,8 +63,7 @@ except ImportError:
     HAS_MPL = False
 
 # ── renderer / parsers ───────────────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(__file__))
-from molvector_render import (
+from molvector.render import (
     parse_xyz, parse_gaussian, parse_gaussian_log, parse_pdb, parse_mol,
     infer_bonds,
     render_molecule, Molecule, CPK_BASE, CPK_DARK, VDW_RADII,
@@ -2029,7 +2028,7 @@ class MoleculeCanvas(QSvgWidget):
         self.request_render()
 
     def set_preset(self, rx, ry, rz):
-        from molvector_render import rotation_matrix
+        from molvector.render import rotation_matrix
         self._rot  = rotation_matrix(math.radians(rx), math.radians(ry), math.radians(rz))
         self._zoom = 1.0
         self._pan  = np.array([0.0, 0.0])
@@ -2037,7 +2036,7 @@ class MoleculeCanvas(QSvgWidget):
 
     def set_principal_axis_preset(self, axis_index):
         import mol_strudel as strudel
-        from molvector_render import ATOMIC_MASSES
+        from molvector.render import ATOMIC_MASSES
         mol = self.molecule
         if not mol or len(mol.atoms) < 2:
             return
@@ -3051,7 +3050,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar_obj.setObjectName("builderToolbar")
         self._build_toolbar_obj.setIconSize(QSize(22, 22))
         self._build_toolbar_obj.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._build_toolbar_obj.setVisible(False)
+        self.addToolBar(self._build_toolbar_obj)
 
         icon_color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
 
@@ -3158,41 +3157,6 @@ class MainWindow(QMainWindow):
         self._zoom_slider.valueChanged.connect(self._on_zoom_change)
         self._zoom_slider.installEventFilter(self)
         tb.addWidget(self._zoom_slider)
-
-        # Mode buttons with icons (icon-only, square, reduced padding)
-        tb.addSeparator()
-        assets_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
-        icon_color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
-        btn_size = 24
-
-        def _make_mode_btn(icon_name, tooltip, slot):
-            btn = QToolButton()
-            btn.setIcon(load_colored_icon(os.path.join(assets_dir, icon_name), icon_color))
-            btn.setCheckable(True)
-            btn.setToolTip(tooltip)
-            btn.clicked.connect(slot)
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            btn.setIconSize(QSize(16, 16))
-            btn.setFixedSize(btn_size, btn_size)
-            btn.setStyleSheet("QToolButton { padding: 0px; margin: 0px; border: none; }")
-            tb.addWidget(btn)
-            return btn
-
-        self._act_main_select = _make_mode_btn(
-            "icon_select.svg",
-            "Selection tool — click or drag to select atoms (S)",
-            self._toggle_selection_mode,
-        )
-        self._act_main_build = _make_mode_btn(
-            "icon_draw.svg",
-            "Build mode — add / bond atoms (B)",
-            self._toggle_build_mode,
-        )
-        self._act_main_align = _make_mode_btn(
-            "icon_align.svg",
-            "Align tool — click a bond to align it vertically (A)",
-            self._toggle_align_mode,
-        )
 
     # ── central layout ────────────────────────────────────────────────────────
 
@@ -3536,13 +3500,6 @@ class MainWindow(QMainWindow):
         self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
         if hasattr(self, '_act_align_btn'):
             self._act_align_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
-        # Update main toolbar mode buttons
-        if hasattr(self, '_act_main_select'):
-            self._act_main_select.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_select.svg"), color))
-        if hasattr(self, '_act_main_build'):
-            self._act_main_build.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
-        if hasattr(self, '_act_main_align'):
-            self._act_main_align.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
 
     def _update_info_panel(self, mol):
         """Populate sidebar labels and status bar for a loaded molecule."""
@@ -3942,16 +3899,13 @@ class MainWindow(QMainWindow):
     def _toggle_selection_mode(self, enabled: bool):
         self._act_select_btn.setChecked(enabled)
         self._act_select_toggle.setChecked(enabled)
-        self._act_main_select.setChecked(enabled)
         self._canvas.selection_mode = enabled
         if enabled:
             self._act_build_toggle.setChecked(False)
             self._act_build_btn.setChecked(False)
-            self._act_main_build.setChecked(False)
             self._canvas.build_mode = False
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
-            self._act_main_align.setChecked(False)
             self._canvas.align_mode = False
             self._set_build_options_visible(False)
         else:
@@ -3964,15 +3918,12 @@ class MainWindow(QMainWindow):
         if enabled:
             self._act_select_btn.setChecked(False)
             self._act_select_toggle.setChecked(False)
-            self._act_main_select.setChecked(False)
             self._canvas.selection_mode = False
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
-            self._act_main_align.setChecked(False)
             self._canvas.align_mode = False
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
-        self._act_main_build.setChecked(enabled)
         self._canvas.build_mode = enabled
         self._set_build_options_visible(enabled)
         self._update_status_for_mode()
@@ -3982,16 +3933,13 @@ class MainWindow(QMainWindow):
         if enabled:
             self._act_select_btn.setChecked(False)
             self._act_select_toggle.setChecked(False)
-            self._act_main_select.setChecked(False)
             self._canvas.selection_mode = False
             self._act_build_btn.setChecked(False)
             self._act_build_toggle.setChecked(False)
-            self._act_main_build.setChecked(False)
             self._canvas.build_mode = False
             self._set_build_options_visible(False)
         self._act_align_toggle.setChecked(enabled)
         self._act_align_btn.setChecked(enabled)
-        self._act_main_align.setChecked(enabled)
         self._canvas.align_mode = enabled
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
@@ -4334,7 +4282,7 @@ class MainWindow(QMainWindow):
     # ── Help ──────────────────────────────────────────────────────────────────
 
     def _open_test_molecule(self):
-        test_path = os.path.join(os.path.dirname(__file__), "test_files", "c5h6.xyz")
+        test_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_files", "c5h6.xyz")
         if os.path.isfile(test_path):
             self._load_and_display(test_path)
 
