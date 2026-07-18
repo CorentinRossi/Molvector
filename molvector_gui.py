@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QColorDialog, QPushButton, QGridLayout,
     QScrollArea, QToolBar, QMenu, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QComboBox, QPlainTextEdit, QLineEdit,
-    QButtonGroup, QRadioButton, QKeySequenceEdit,
+    QButtonGroup, QRadioButton, QKeySequenceEdit, QToolButton,
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
@@ -3159,6 +3159,41 @@ class MainWindow(QMainWindow):
         self._zoom_slider.installEventFilter(self)
         tb.addWidget(self._zoom_slider)
 
+        # Mode buttons with icons (icon-only, square, reduced padding)
+        tb.addSeparator()
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
+        icon_color = '#ccd6f6' if self._current_theme == 'dark' else '#000000'
+        btn_size = 24
+
+        def _make_mode_btn(icon_name, tooltip, slot):
+            btn = QToolButton()
+            btn.setIcon(load_colored_icon(os.path.join(assets_dir, icon_name), icon_color))
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(slot)
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            btn.setIconSize(QSize(16, 16))
+            btn.setFixedSize(btn_size, btn_size)
+            btn.setStyleSheet("QToolButton { padding: 0px; margin: 0px; border: none; }")
+            tb.addWidget(btn)
+            return btn
+
+        self._act_main_select = _make_mode_btn(
+            "icon_select.svg",
+            "Selection tool — click or drag to select atoms (S)",
+            self._toggle_selection_mode,
+        )
+        self._act_main_build = _make_mode_btn(
+            "icon_draw.svg",
+            "Build mode — add / bond atoms (B)",
+            self._toggle_build_mode,
+        )
+        self._act_main_align = _make_mode_btn(
+            "icon_align.svg",
+            "Align tool — click a bond to align it vertically (A)",
+            self._toggle_align_mode,
+        )
+
     # ── central layout ────────────────────────────────────────────────────────
 
     def _build_central(self):
@@ -3501,6 +3536,13 @@ class MainWindow(QMainWindow):
         self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
         if hasattr(self, '_act_align_btn'):
             self._act_align_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
+        # Update main toolbar mode buttons
+        if hasattr(self, '_act_main_select'):
+            self._act_main_select.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_select.svg"), color))
+        if hasattr(self, '_act_main_build'):
+            self._act_main_build.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
+        if hasattr(self, '_act_main_align'):
+            self._act_main_align.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
 
     def _update_info_panel(self, mol):
         """Populate sidebar labels and status bar for a loaded molecule."""
@@ -3900,13 +3942,16 @@ class MainWindow(QMainWindow):
     def _toggle_selection_mode(self, enabled: bool):
         self._act_select_btn.setChecked(enabled)
         self._act_select_toggle.setChecked(enabled)
+        self._act_main_select.setChecked(enabled)
         self._canvas.selection_mode = enabled
         if enabled:
             self._act_build_toggle.setChecked(False)
             self._act_build_btn.setChecked(False)
+            self._act_main_build.setChecked(False)
             self._canvas.build_mode = False
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
+            self._act_main_align.setChecked(False)
             self._canvas.align_mode = False
             self._set_build_options_visible(False)
         else:
@@ -3919,12 +3964,15 @@ class MainWindow(QMainWindow):
         if enabled:
             self._act_select_btn.setChecked(False)
             self._act_select_toggle.setChecked(False)
+            self._act_main_select.setChecked(False)
             self._canvas.selection_mode = False
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
+            self._act_main_align.setChecked(False)
             self._canvas.align_mode = False
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
+        self._act_main_build.setChecked(enabled)
         self._canvas.build_mode = enabled
         self._set_build_options_visible(enabled)
         self._update_status_for_mode()
@@ -3934,13 +3982,16 @@ class MainWindow(QMainWindow):
         if enabled:
             self._act_select_btn.setChecked(False)
             self._act_select_toggle.setChecked(False)
+            self._act_main_select.setChecked(False)
             self._canvas.selection_mode = False
             self._act_build_btn.setChecked(False)
             self._act_build_toggle.setChecked(False)
+            self._act_main_build.setChecked(False)
             self._canvas.build_mode = False
             self._set_build_options_visible(False)
         self._act_align_toggle.setChecked(enabled)
         self._act_align_btn.setChecked(enabled)
+        self._act_main_align.setChecked(enabled)
         self._canvas.align_mode = enabled
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
