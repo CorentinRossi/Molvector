@@ -3038,6 +3038,12 @@ class MainWindow(QMainWindow):
         help_menu.addAction(act_open_test)
         self._shortcut_actions["open_test"] = act_open_test
 
+        act_open_test_folder = QAction("Open Test Files Folder", self)
+        act_open_test_folder.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_files"))))
+        help_menu.addAction(act_open_test_folder)
+
         help_menu.addSeparator()
 
         act_about = QAction("&About Molvector", self)
@@ -3096,10 +3102,6 @@ class MainWindow(QMainWindow):
         self._auto_h_check.toggled.connect(self._on_auto_h_toggle)
         self._act_auto_h = self._build_toolbar_obj.addWidget(self._auto_h_check)
 
-        self._act_clear = QAction("Clear All", self)
-        self._act_clear.triggered.connect(self._clear_molecule)
-        self._build_toolbar_obj.addAction(self._act_clear)
-
         self._sep_build3 = self._build_toolbar_obj.addSeparator()
         self._act_clean = QAction("Clean", self)
         self._act_clean.setToolTip("Rapidly optimize geometry (Force Field)")
@@ -3112,7 +3114,6 @@ class MainWindow(QMainWindow):
         self._act_elem_combo.setVisible(visible)
         self._sep_build2.setVisible(visible)
         self._act_auto_h.setVisible(visible)
-        self._act_clear.setVisible(visible)
         self._sep_build3.setVisible(visible)
         self._act_clean.setVisible(visible)
         self._build_toolbar_obj.updateGeometry()
