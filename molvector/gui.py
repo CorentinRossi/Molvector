@@ -23,7 +23,7 @@ Align mode (A):
 
 Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
-  Edit          Appearance / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode / Settings / Shortcuts
+  Edit          Settings / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode / Shortcuts
   View          Reset View / Preset orientations / Background Colour
   Calculations  Generate G16 Input / Calculate Rotational Constants / Calculation Results
   Build         Clean / Undo / Redo / Optimize / Disable Bond Order
@@ -364,7 +364,7 @@ class ColorButton(QPushButton):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SETTINGS DIALOG  (Theme, ball size, bond width, background)
+# SETTINGS DIALOG  (Tabbed: General, Overlay, Atoms & Bonds)
 # ─────────────────────────────────────────────────────────────────────────────
 
 POSITION_LABELS = {
@@ -441,103 +441,131 @@ class LightPositionDialog(QDialog):
         return self._selected
 
 
-class AppearanceDialog(QDialog):
+class SettingsDialog(QDialog):
     CONFIG_FILE = os.path.join(os.path.dirname(__file__), "molvector_config.json")
 
-    def __init__(self, atom_scale, bond_width, bond_style, color_overrides,
+    def __init__(self, theme, bg_color, atom_scale, bond_width, bond_style, color_overrides,
                  atom_border_mode="scaled", atom_border_scale=1.04, atom_border_width=2.0,
                  bond_color="#444444", lighting_intensity=1.0,
-                 light_position="top-left",
-                 roughness=1.0,
+                 light_position="top-left", roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
-                 live_callback=None, axes_live_callback=None, parent=None):
+                 live_callback=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Appearance")
-        self.setMinimumWidth(400)
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(480)
         self._live_callback = live_callback
-        self._axes_live_callback = axes_live_callback
-        self._orig = (atom_scale, bond_width, bond_style,
-                      dict(color_overrides), atom_border_mode, atom_border_scale,
-                      atom_border_width, bond_color,
-                      lighting_intensity, light_position,
-                      roughness,
-                      show_axes, show_principal_axes,
-                      axes_position, principal_axes_position)
+        self._color_overrides = color_overrides
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        form = QFormLayout()
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        self._build_general_tab(theme, bg_color)
+        self._build_overlay_tab(show_axes, show_principal_axes, axes_position, principal_axes_position)
+        self._build_atoms_bonds_tab(atom_scale, bond_width, bond_style,
+                                     atom_border_mode, atom_border_scale, atom_border_width,
+                                     bond_color, lighting_intensity, light_position, roughness)
+
+        btn_row = QHBoxLayout()
+        btn_make_config = QPushButton("Make Default")
+        btn_make_config.clicked.connect(self._save_config)
+        btn_restore = QPushButton("Restore Defaults")
+        btn_restore.clicked.connect(self._restore_defaults)
+        btn_row.addWidget(btn_make_config)
+        btn_row.addWidget(btn_restore)
+        btn_row.addStretch()
+        dialog_btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        dialog_btns.accepted.connect(self.accept)
+        dialog_btns.rejected.connect(self.reject)
+        btn_row.addWidget(dialog_btns)
+        layout.addLayout(btn_row)
+
+    def _build_general_tab(self, theme, bg_color):
+        page = QWidget()
+        form = QFormLayout(page)
         form.setSpacing(8)
 
-        # Ball size
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(["Dark", "Light"])
+        self._theme_combo.setCurrentText(theme.capitalize())
+        self._theme_combo.currentTextChanged.connect(self._on_change)
+        form.addRow("Theme:", self._theme_combo)
+
+        self._bg_btn = ColorButton(bg_color)
+        self._bg_btn.colorChanged.connect(self._on_change)
+        form.addRow("Background:", self._bg_btn)
+
+        self.tabs.addTab(page, "&General")
+
+    def _build_overlay_tab(self, show_axes, show_principal_axes, axes_position, principal_axes_position):
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setSpacing(8)
+
+        self._show_axes_cb = QCheckBox("Show XYZ Axes")
+        self._show_axes_cb.setChecked(show_axes)
+        self._show_axes_cb.toggled.connect(self._on_change)
+        form.addRow("XYZ axes:", self._show_axes_cb)
+
+        self._axes_pos_combo = QComboBox()
+        self._axes_pos_combo.addItems(["Bottom left", "Bottom right", "Top left", "Top right"])
+        self._axes_pos_combo.setCurrentText(axes_position.replace("-", " ").title())
+        self._axes_pos_combo.setFixedWidth(120)
+        self._axes_pos_combo.currentIndexChanged.connect(self._on_change)
+        form.addRow("Position:", self._axes_pos_combo)
+
+        self._show_principal_axes_cb = QCheckBox("Show a/b/c Axes")
+        self._show_principal_axes_cb.setChecked(show_principal_axes)
+        self._show_principal_axes_cb.toggled.connect(self._on_change)
+        form.addRow("a/b/c axes:", self._show_principal_axes_cb)
+
+        self._principal_axes_pos_combo = QComboBox()
+        self._principal_axes_pos_combo.addItems(["Bottom right", "Bottom left", "Top left", "Top right"])
+        self._principal_axes_pos_combo.setCurrentText(principal_axes_position.replace("-", " ").title())
+        self._principal_axes_pos_combo.setFixedWidth(120)
+        self._principal_axes_pos_combo.currentIndexChanged.connect(self._on_change)
+        form.addRow("Position:", self._principal_axes_pos_combo)
+
+        self.tabs.addTab(page, "&Overlay")
+
+    def _build_atoms_bonds_tab(self, atom_scale, bond_width, bond_style,
+                                atom_border_mode, atom_border_scale, atom_border_width,
+                                bond_color, lighting_intensity, light_position, roughness):
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setSpacing(8)
+
+        self._edit_colors_btn = QPushButton("Edit Atom Colours…")
+        self._edit_colors_btn.clicked.connect(self._edit_atom_colors)
+        form.addRow("Atom color:", self._edit_colors_btn)
+
         self._ball_slider = QSlider(Qt.Orientation.Horizontal)
         self._ball_slider.setRange(20, 150)
         self._ball_slider.setValue(int(atom_scale * 100))
         self._ball_slider.setFixedWidth(160)
         self._ball_lbl = QLabel(f"{atom_scale:.2f}")
         self._ball_slider.valueChanged.connect(self._on_change)
-        self._ball_slider.installEventFilter(self)
         ball_row = QHBoxLayout()
         ball_row.addWidget(self._ball_slider)
         ball_row.addWidget(self._ball_lbl)
-        form.addRow("Ball Size:", ball_row)
+        form.addRow("Ball size:", ball_row)
 
-        # Bond width
         self._bondw_slider = QSlider(Qt.Orientation.Horizontal)
         self._bondw_slider.setRange(2, 30)
         self._bondw_slider.setValue(int(bond_width))
         self._bondw_slider.setFixedWidth(160)
         self._bondw_lbl = QLabel(f"{bond_width:.0f}")
         self._bondw_slider.valueChanged.connect(self._on_change)
-        self._bondw_slider.installEventFilter(self)
         bondw_row = QHBoxLayout()
         bondw_row.addWidget(self._bondw_slider)
         bondw_row.addWidget(self._bondw_lbl)
-        form.addRow("Bond Width:", bondw_row)
+        form.addRow("Bond size:", bondw_row)
 
-        # Lighting intensity
-        self._lighting_slider = QSlider(Qt.Orientation.Horizontal)
-        self._lighting_slider.setRange(0, 200)
-        self._lighting_slider.setValue(int(lighting_intensity * 100))
-        self._lighting_slider.setFixedWidth(160)
-        self._lighting_lbl = QLabel(f"{lighting_intensity:.2f}")
-        self._lighting_slider.valueChanged.connect(self._on_change)
-        self._lighting_slider.installEventFilter(self)
-        lighting_row = QHBoxLayout()
-        lighting_row.addWidget(self._lighting_slider)
-        lighting_row.addWidget(self._lighting_lbl)
-        form.addRow("Lighting:", lighting_row)
-
-        # Light position
-        self._light_position = light_position
-        self._light_pos_btn = QPushButton(POSITION_LABELS.get(light_position, light_position))
-        self._light_pos_btn.setFixedWidth(160)
-        self._light_pos_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._light_pos_btn.clicked.connect(self._pick_light_position)
-        form.addRow("Light Position:", self._light_pos_btn)
-
-        # Roughness
-        self._roughness_slider = QSlider(Qt.Orientation.Horizontal)
-        self._roughness_slider.setRange(0, 200)
-        self._roughness_slider.setValue(int(roughness * 100))
-        self._roughness_slider.setFixedWidth(160)
-        self._roughness_lbl = QLabel(f"{roughness:.2f}")
-        self._roughness_slider.valueChanged.connect(self._on_change)
-        self._roughness_slider.installEventFilter(self)
-        roughness_row = QHBoxLayout()
-        roughness_row.addWidget(self._roughness_slider)
-        roughness_row.addWidget(self._roughness_lbl)
-        form.addRow("Roughness:", roughness_row)
-
-        # Atom colours + border (init early so _on_change can access them)
-        self._color_overrides = color_overrides
-        self._border_mode = QComboBox()
-        self._border_mode.addItems(["None", "Scaled", "Constant"])
-        self._border_mode.setCurrentText(atom_border_mode.capitalize())
-
-        # Bond style
         self._style_combo = QComboBox()
         self._style_combo.addItems(["Splitted", "Unicolor", "Gradient"])
         self._bond_color = bond_color
@@ -556,70 +584,54 @@ class AppearanceDialog(QDialog):
         style_row.addStretch()
         form.addRow("Bond Style:", style_row)
 
-        # Atom colours button
-        self._edit_colors_btn = QPushButton("Edit Atom Colours…")
-        self._edit_colors_btn.clicked.connect(self._edit_atom_colors)
-        form.addRow("Atom Colours:", self._edit_colors_btn)
+        self._roughness_slider = QSlider(Qt.Orientation.Horizontal)
+        self._roughness_slider.setRange(0, 200)
+        self._roughness_slider.setValue(int(roughness * 100))
+        self._roughness_slider.setFixedWidth(160)
+        self._roughness_lbl = QLabel(f"{roughness:.2f}")
+        self._roughness_slider.valueChanged.connect(self._on_change)
+        roughness_row = QHBoxLayout()
+        roughness_row.addWidget(self._roughness_slider)
+        roughness_row.addWidget(self._roughness_lbl)
+        form.addRow("Roughness:", roughness_row)
 
-        # Atom border
+        self._lighting_slider = QSlider(Qt.Orientation.Horizontal)
+        self._lighting_slider.setRange(0, 200)
+        self._lighting_slider.setValue(int(lighting_intensity * 100))
+        self._lighting_slider.setFixedWidth(160)
+        self._lighting_lbl = QLabel(f"{lighting_intensity:.2f}")
+        self._lighting_slider.valueChanged.connect(self._on_change)
+        lighting_row = QHBoxLayout()
+        lighting_row.addWidget(self._lighting_slider)
+        lighting_row.addWidget(self._lighting_lbl)
+        form.addRow("Lighting:", lighting_row)
+
+        self._light_position = light_position
+        self._light_pos_btn = QPushButton(POSITION_LABELS.get(light_position, light_position))
+        self._light_pos_btn.setFixedWidth(160)
+        self._light_pos_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._light_pos_btn.clicked.connect(self._pick_light_position)
+        form.addRow("Lighting Position:", self._light_pos_btn)
+
+        self._border_mode = QComboBox()
+        self._border_mode.addItems(["None", "Scaled", "Constant"])
+        self._border_mode.setFixedWidth(90)
+        self._border_mode.setCurrentText(atom_border_mode.capitalize())
+        self._border_mode.currentTextChanged.connect(self._on_mode_change)
+
         self._border_slider = QSlider(Qt.Orientation.Horizontal)
         self._border_slider.setFixedWidth(160)
         self._border_slider.valueChanged.connect(self._on_change)
-        self._border_slider.installEventFilter(self)
 
-        self._border_mode.setFixedWidth(90)
-        self._border_mode.currentTextChanged.connect(self._on_mode_change)
         border_row = QHBoxLayout()
         border_row.addWidget(self._border_mode)
         border_row.addWidget(self._border_slider)
         form.addRow("Border:", border_row)
-        self._form = form
+
         self._set_border_slider_for_mode(atom_border_mode, atom_border_scale, atom_border_width)
         self._update_border_visibility()
 
-        self._show_axes_cb = QCheckBox("Show XYZ Axes")
-        self._show_axes_cb.setChecked(show_axes)
-        self._show_axes_cb.toggled.connect(self._on_axes_change)
-        form.addRow("Overlay:", self._show_axes_cb)
-
-        self._axes_pos_combo = QComboBox()
-        self._axes_pos_combo.addItems(["Bottom left", "Bottom right", "Top left", "Top right"])
-        self._axes_pos_combo.setCurrentText(axes_position.replace("-", " ").title())
-        self._axes_pos_combo.setFixedWidth(120)
-        self._axes_pos_combo.currentIndexChanged.connect(self._on_axes_change)
-        form.addRow("Position:", self._axes_pos_combo)
-
-        self._show_principal_axes_cb = QCheckBox("Show a/b/c Axes")
-        self._show_principal_axes_cb.setChecked(show_principal_axes)
-        self._show_principal_axes_cb.toggled.connect(self._on_axes_change)
-        form.addRow("", self._show_principal_axes_cb)
-
-        self._principal_axes_pos_combo = QComboBox()
-        self._principal_axes_pos_combo.addItems(["Bottom right", "Bottom left", "Top left", "Top right"])
-        self._principal_axes_pos_combo.setCurrentText(principal_axes_position.replace("-", " ").title())
-        self._principal_axes_pos_combo.setFixedWidth(120)
-        self._principal_axes_pos_combo.currentIndexChanged.connect(self._on_axes_change)
-        form.addRow("Position:", self._principal_axes_pos_combo)
-
-        layout.addLayout(form)
-
-        # Bottom buttons
-        layout.addSpacing(6)
-        btn_row = QHBoxLayout()
-        btn_make_config = QPushButton("Make Default")
-        btn_make_config.clicked.connect(self._save_config)
-        btn_restore = QPushButton("Restore Defaults")
-        btn_restore.clicked.connect(self._restore_defaults)
-        btn_row.addWidget(btn_make_config)
-        btn_row.addWidget(btn_restore)
-        btn_row.addStretch()
-        dialog_btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        dialog_btns.accepted.connect(self.accept)
-        dialog_btns.rejected.connect(self.reject)
-        btn_row.addWidget(dialog_btns)
-        layout.addLayout(btn_row)
+        self.tabs.addTab(page, "Atoms && Bonds")
 
     def _set_border_slider_for_mode(self, mode, scale, width):
         if mode == "constant":
@@ -629,25 +641,10 @@ class AppearanceDialog(QDialog):
             self._border_slider.setRange(100, 150)
             self._border_slider.setValue(int(scale * 100))
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.MouseButtonDblClick:
-            cfg = self.load_config() or {}
-            if obj is self._ball_slider:
-                self._ball_slider.setValue(int(cfg.get("atom_scale", 0.7) * 100))
-            elif obj is self._bondw_slider:
-                self._bondw_slider.setValue(int(cfg.get("bond_width_px", 10)))
-            elif obj is self._lighting_slider:
-                self._lighting_slider.setValue(int(cfg.get("lighting_intensity", 1.0) * 100))
-            elif obj is self._roughness_slider:
-                self._roughness_slider.setValue(int(cfg.get("roughness", 1.0) * 100))
-            elif obj is self._border_slider:
-                mode = self._border_mode.currentText().lower()
-                if mode == "constant":
-                    self._border_slider.setValue(int(cfg.get("atom_border_width", 2)))
-                else:
-                    self._border_slider.setValue(int(cfg.get("atom_border_scale", 1.04) * 100))
-            return True
-        return super().eventFilter(obj, event)
+    def _update_border_visibility(self):
+        visible = self._border_mode.currentText().lower() != "none"
+        if hasattr(self, '_border_slider'):
+            self._border_slider.setVisible(visible)
 
     def _on_mode_change(self):
         mode = self._border_mode.currentText().lower()
@@ -659,33 +656,25 @@ class AppearanceDialog(QDialog):
             self._border_slider.setValue(104)
         self._on_change()
 
-    def _update_border_visibility(self):
-        visible = self._border_mode.currentText().lower() != "none"
-        if hasattr(self, '_border_slider'):
-            self._border_slider.setVisible(visible)
+    def _on_style_change(self, text: str):
+        self._unicolor_btn.setVisible(text == "Unicolor")
+        self._on_change()
 
     def _on_change(self):
-        self._ball_lbl.setText(f"{self.ball_scale:.2f}")
-        self._bondw_lbl.setText(f"{self.bond_width:.0f}")
-        self._lighting_lbl.setText(f"{self.lighting_intensity:.2f}")
-        self._roughness_lbl.setText(f"{self.roughness:.2f}")
-        self._update_border_visibility()
-        if self._live_callback and hasattr(self, '_border_slider'):
+        if hasattr(self, '_ball_lbl'):
+            self._ball_lbl.setText(f"{self.ball_scale:.2f}")
+            self._bondw_lbl.setText(f"{self.bond_width:.0f}")
+            self._lighting_lbl.setText(f"{self.lighting_intensity:.2f}")
+            self._roughness_lbl.setText(f"{self.roughness:.2f}")
+            self._update_border_visibility()
+        if self._live_callback:
             self._live_callback(
+                self.theme, self.bg_color,
                 self.ball_scale, self.bond_width, self.bond_style,
                 self._color_overrides, self.border_mode, self.border_scale,
                 self.border_width, self.bond_color,
                 self.lighting_intensity, self.light_position,
                 self.roughness,
-            )
-
-    def _on_style_change(self, text: str):
-        self._unicolor_btn.setVisible(text == "Unicolor")
-        self._on_change()
-
-    def _on_axes_change(self):
-        if self._axes_live_callback:
-            self._axes_live_callback(
                 self.show_axes, self.show_principal_axes,
                 self.axes_position, self.principal_axes_position,
             )
@@ -702,6 +691,32 @@ class AppearanceDialog(QDialog):
             f"background-color: {self._bond_color}; border: 1px solid #888; border-radius: 3px;"
         )
 
+    def _pick_light_position(self):
+        dlg = LightPositionDialog(self._light_position, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._light_position = dlg.position
+            self._light_pos_btn.setText(POSITION_LABELS.get(self._light_position, self._light_position))
+            self._on_change()
+
+    def _edit_atom_colors(self):
+        mol = self.parent()._canvas.molecule if self.parent() else None
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+        elements = sorted({a.element for a in mol.atoms})
+        dlg = AtomColorDialog(elements, self._color_overrides, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._color_overrides = dlg.get_overrides()
+            self._on_change()
+
+    @property
+    def theme(self) -> str:
+        return self._theme_combo.currentText().lower()
+
+    @property
+    def bg_color(self) -> str:
+        return self._bg_btn.color()
+
     @property
     def ball_scale(self) -> float:
         return self._ball_slider.value() / 100.0
@@ -709,6 +724,15 @@ class AppearanceDialog(QDialog):
     @property
     def bond_width(self) -> float:
         return float(self._bondw_slider.value())
+
+    @property
+    def bond_style(self) -> str:
+        text = self._style_combo.currentText()
+        return "unicolor" if text == "Unicolor" else text.lower()
+
+    @property
+    def bond_color(self) -> str:
+        return self._bond_color
 
     @property
     def border_mode(self) -> str:
@@ -721,17 +745,6 @@ class AppearanceDialog(QDialog):
     @property
     def border_width(self) -> float:
         return float(self._border_slider.value())
-
-    @property
-    def bond_style(self) -> str:
-        text = self._style_combo.currentText()
-        if text == "Unicolor":
-            return "unicolor"
-        return text.lower()
-
-    @property
-    def bond_color(self) -> str:
-        return self._bond_color
 
     @property
     def lighting_intensity(self) -> float:
@@ -761,26 +774,21 @@ class AppearanceDialog(QDialog):
     def principal_axes_position(self) -> str:
         return self._principal_axes_pos_combo.currentText().lower().replace(" ", "-")
 
-    def _pick_light_position(self):
-        dlg = LightPositionDialog(self._light_position, parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._light_position = dlg.position
-            self._light_pos_btn.setText(POSITION_LABELS.get(self._light_position, self._light_position))
-            self._on_change()
+    def _section_key(self) -> str:
+        return {0: "general", 1: "overlay", 2: "atoms_bonds"}.get(
+            self.tabs.currentIndex(), "general")
 
-    def _edit_atom_colors(self):
-        mol = self.parent()._canvas.molecule if self.parent() else None
-        if mol is None:
-            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
-            return
-        elements = sorted({a.element for a in mol.atoms})
-        dlg = AtomColorDialog(elements, self._color_overrides, parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._color_overrides = dlg.get_overrides()
-            self._on_change()
-
-    def _save_config(self):
-        config = {
+    def _section_data(self, section: str) -> dict:
+        if section == "general":
+            return {"theme": self.theme, "bg_color": self.bg_color}
+        if section == "overlay":
+            return {
+                "show_axes": self.show_axes,
+                "show_principal_axes": self.show_principal_axes,
+                "axes_position": self.axes_position,
+                "principal_axes_position": self.principal_axes_position,
+            }
+        return {
             "atom_scale": self.ball_scale,
             "bond_width_px": self.bond_width,
             "bond_style": self.bond_style,
@@ -792,95 +800,98 @@ class AppearanceDialog(QDialog):
             "light_position": self.light_position,
             "roughness": self.roughness,
             "color_overrides": self._color_overrides,
-            "show_axes": self.show_axes,
-            "show_principal_axes": self.show_principal_axes,
-            "axes_position": self.axes_position,
-            "principal_axes_position": self.principal_axes_position,
         }
+
+    def _save_config(self):
+        section = self._section_key()
+        config = {}
+        if os.path.isfile(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE) as f:
+                    config = json.load(f)
+            except Exception:
+                pass
+        config[section] = self._section_data(section)
         try:
             with open(self.CONFIG_FILE, "w") as f:
                 json.dump(config, f, indent=2)
             QMessageBox.information(self, "Config Saved",
-                f"Settings saved to:\n{self.CONFIG_FILE}")
+                f"{section.title()} settings saved.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save config:\n{e}")
 
+    def _restore_section(self, section: str):
+        if section == "general":
+            self._theme_combo.setCurrentText("Light")
+            self._bg_btn.set_color("#ffffff")
+        elif section == "overlay":
+            self._show_axes_cb.setChecked(False)
+            self._show_principal_axes_cb.setChecked(False)
+            self._axes_pos_combo.setCurrentText("Bottom left")
+            self._principal_axes_pos_combo.setCurrentText("Bottom right")
+        else:
+            self._ball_slider.setValue(70)
+            self._bondw_slider.setValue(10)
+            self._style_combo.setCurrentText("Splitted")
+            self._bond_color = "#444444"
+            self._update_unicolor_btn()
+            self._roughness_slider.setValue(100)
+            self._lighting_slider.setValue(100)
+            self._light_position = "top-left"
+            self._light_pos_btn.setText("Top left")
+            self._border_mode.setCurrentText("Scaled")
+            self._border_slider.setValue(104)
+            self._color_overrides = {}
+
     def _restore_defaults(self):
-        self._ball_slider.setValue(70)
-        self._bondw_slider.setValue(10)
-        self._style_combo.setCurrentText("Splitted")
-        self._bond_color = "#444444"
-        self._update_unicolor_btn()
-        self._lighting_slider.setValue(100)
-        self._light_position = "top-left"
-        self._light_pos_btn.setText("Top left")
-        self._roughness_slider.setValue(100)
-        self._border_mode.setCurrentText("Scaled")
-        self._border_slider.setValue(104)
-        self._color_overrides = {}
-        self._show_axes_cb.setChecked(False)
-        self._show_principal_axes_cb.setChecked(False)
-        self._axes_pos_combo.setCurrentText("Bottom left")
-        self._principal_axes_pos_combo.setCurrentText("Bottom right")
+        section = self._section_key()
+        self._restore_section(section)
         self._on_change()
 
     @staticmethod
     def load_config():
-        path = AppearanceDialog.CONFIG_FILE
-        if os.path.isfile(path):
+        path = SettingsDialog.CONFIG_FILE
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+        TAB_KEYS = {"general", "overlay", "atoms_bonds"}
+        if not data.keys() & TAB_KEYS:
+            data = {
+                "general": {
+                    "theme": data.get("theme", "light"),
+                    "bg_color": data.get("bg_color", "#ffffff"),
+                },
+                "overlay": {
+                    "show_axes": data.get("show_axes", False),
+                    "show_principal_axes": data.get("show_principal_axes", False),
+                    "axes_position": data.get("axes_position", "bottom-left"),
+                    "principal_axes_position": data.get("principal_axes_position", "bottom-right"),
+                },
+                "atoms_bonds": {
+                    "atom_scale": data.get("atom_scale", 0.7),
+                    "bond_width_px": data.get("bond_width_px", 10.0),
+                    "bond_style": data.get("bond_style", "splitted"),
+                    "bond_color": data.get("bond_color", "#444444"),
+                    "atom_border_mode": data.get("atom_border_mode", "scaled"),
+                    "atom_border_scale": data.get("atom_border_scale", 1.04),
+                    "atom_border_width": data.get("atom_border_width", 2.0),
+                    "lighting_intensity": data.get("lighting_intensity", 1.0),
+                    "light_position": data.get("light_position", "top-left"),
+                    "roughness": data.get("roughness", 1.0),
+                    "color_overrides": data.get("color_overrides", {}),
+                },
+            }
             try:
-                with open(path) as f:
-                    return json.load(f)
+                with open(path, "w") as f:
+                    json.dump(data, f, indent=2)
             except Exception:
                 pass
-        return None
-
-
-class SettingsDialog(QDialog):
-    def __init__(self, theme, bg_color, live_callback=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setFixedWidth(350)
-        self._live_callback = live_callback
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-
-        form = QFormLayout()
-        form.setSpacing(10)
-
-        # Theme
-        self._theme_combo = QComboBox()
-        self._theme_combo.addItems(["Dark", "Light"])
-        self._theme_combo.setCurrentText(theme.capitalize())
-        self._theme_combo.currentTextChanged.connect(self._on_change)
-        form.addRow("Theme:", self._theme_combo)
-
-        # Background Color
-        self._bg_btn = ColorButton(bg_color)
-        self._bg_btn.colorChanged.connect(self._on_change)
-        form.addRow("Background:", self._bg_btn)
-
-        layout.addLayout(form)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-    def _on_change(self):
-        if self._live_callback:
-            self._live_callback(
-                self._theme_combo.currentText().lower(),
-                self._bg_btn.color(),
-            )
-
-    @property
-    def theme(self) -> str: return self._theme_combo.currentText().lower()
-    @property
-    def bg_color(self) -> str: return self._bg_btn.color()
+        return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2840,11 +2851,17 @@ class MainWindow(QMainWindow):
         # ── Edit ──
         edit_menu = mb.addMenu("&Edit")
 
-        act_appearance = QAction("&Appearance…", self)
-        act_appearance.setShortcut(_mod("Ctrl+;"))
-        act_appearance.triggered.connect(self._edit_appearance)
-        edit_menu.addAction(act_appearance)
-        self._shortcut_actions["appearance"] = act_appearance
+        act_settings = QAction("&Settings…", self)
+        act_settings.setShortcut(_mod("Ctrl+;"))
+        act_settings.triggered.connect(self._edit_settings)
+        edit_menu.addAction(act_settings)
+        self._shortcut_actions["settings"] = act_settings
+
+        act_style = QAction("&Style…", self)
+        act_style.setShortcut(_mod("Ctrl+="))
+        act_style.triggered.connect(self._edit_style)
+        edit_menu.addAction(act_style)
+        self._shortcut_actions["style"] = act_style
 
         edit_menu.addSeparator()
 
@@ -2887,14 +2904,6 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(act_align_toggle)
         self._act_align_toggle = act_align_toggle
         self._shortcut_actions["align_mode"] = act_align_toggle
-
-        edit_menu.addSeparator()
-
-        act_settings = QAction("&Settings…", self)
-        act_settings.setShortcut(_mod("Ctrl+P"))
-        act_settings.triggered.connect(self._edit_settings)
-        edit_menu.addAction(act_settings)
-        self._shortcut_actions["settings"] = act_settings
 
         act_shortcuts = QAction("&Shortcuts…", self)
         act_shortcuts.triggered.connect(self._edit_shortcuts)
@@ -4062,29 +4071,40 @@ class MainWindow(QMainWindow):
     # ── Edit actions ──────────────────────────────────────────────────────────
 
     def _load_appearance_config(self):
-        cfg = AppearanceDialog.load_config()
+        cfg = SettingsDialog.load_config()
         if cfg is None:
             return
-        self._canvas.atom_scale = cfg.get("atom_scale", self._canvas.atom_scale)
-        self._canvas.bond_width_px = cfg.get("bond_width_px", self._canvas.bond_width_px)
-        self._canvas.bond_style = cfg.get("bond_style", self._canvas.bond_style)
-        self._canvas.bond_color = cfg.get("bond_color", self._canvas.bond_color)
-        self._canvas.atom_border_mode = cfg.get("atom_border_mode", self._canvas.atom_border_mode)
-        self._canvas.atom_border_scale = cfg.get("atom_border_scale", self._canvas.atom_border_scale)
-        self._canvas.atom_border_width = cfg.get("atom_border_width", self._canvas.atom_border_width)
-        self._canvas.lighting_intensity = cfg.get("lighting_intensity", self._canvas.lighting_intensity)
-        self._canvas.light_position = cfg.get("light_position", self._canvas.light_position)
-        self._canvas.roughness = cfg.get("roughness", self._canvas.roughness)
-        self._color_overrides = cfg.get("color_overrides", {})
-        self._canvas.color_overrides = self._color_overrides
-        self._canvas.show_axes = cfg.get("show_axes", self._canvas.show_axes)
-        self._canvas.show_principal_axes = cfg.get("show_principal_axes", self._canvas.show_principal_axes)
-        self._canvas.axes_position = cfg.get("axes_position", self._canvas.axes_position)
-        self._canvas.principal_axes_position = cfg.get("principal_axes_position", self._canvas.principal_axes_position)
+        g = cfg.get("general", {})
+        o = cfg.get("overlay", {})
+        a = cfg.get("atoms_bonds", {})
+        if g:
+            theme = g.get("theme", "light")
+            if theme != self._current_theme:
+                self._apply_theme(theme)
+            self._canvas.background = g.get("bg_color", self._canvas.background)
+        if a:
+            self._canvas.atom_scale = a.get("atom_scale", self._canvas.atom_scale)
+            self._canvas.bond_width_px = a.get("bond_width_px", self._canvas.bond_width_px)
+            self._canvas.bond_style = a.get("bond_style", self._canvas.bond_style)
+            self._canvas.bond_color = a.get("bond_color", self._canvas.bond_color)
+            self._canvas.atom_border_mode = a.get("atom_border_mode", self._canvas.atom_border_mode)
+            self._canvas.atom_border_scale = a.get("atom_border_scale", self._canvas.atom_border_scale)
+            self._canvas.atom_border_width = a.get("atom_border_width", self._canvas.atom_border_width)
+            self._canvas.lighting_intensity = a.get("lighting_intensity", self._canvas.lighting_intensity)
+            self._canvas.light_position = a.get("light_position", self._canvas.light_position)
+            self._canvas.roughness = a.get("roughness", self._canvas.roughness)
+            self._color_overrides = a.get("color_overrides", {})
+            self._canvas.color_overrides = self._color_overrides
+        if o:
+            self._canvas.show_axes = o.get("show_axes", self._canvas.show_axes)
+            self._canvas.show_principal_axes = o.get("show_principal_axes", self._canvas.show_principal_axes)
+            self._canvas.axes_position = o.get("axes_position", self._canvas.axes_position)
+            self._canvas.principal_axes_position = o.get("principal_axes_position", self._canvas.principal_axes_position)
         self._canvas.request_render()
 
-    def _edit_appearance(self):
-        orig = (self._canvas.atom_scale, self._canvas.bond_width_px,
+    def _edit_settings(self, tab_index=0):
+        orig = (self._current_theme, self._canvas.background,
+                self._canvas.atom_scale, self._canvas.bond_width_px,
                 self._canvas.bond_style, dict(self._color_overrides),
                 self._canvas.atom_border_mode, self._canvas.atom_border_scale,
                 self._canvas.atom_border_width, self._canvas.bond_color,
@@ -4093,7 +4113,12 @@ class MainWindow(QMainWindow):
                 self._canvas.show_axes, self._canvas.show_principal_axes,
                 self._canvas.axes_position, self._canvas.principal_axes_position)
 
-        def _live_update(ball, bw, style, colors, border_mode, border_scale, border_width, bcol, lighting, pos, rough):
+        def _live_update(theme, bg, ball, bw, style, colors, border_mode, border_scale,
+                         border_width, bcol, lighting, pos, rough,
+                         show_xyz, show_abc, xyz_pos, abc_pos):
+            if theme != self._current_theme:
+                self._apply_theme(theme)
+            self._canvas.background = bg
             self._canvas.atom_scale = ball
             self._canvas.bond_width_px = bw
             self._canvas.bond_style = style
@@ -4106,20 +4131,27 @@ class MainWindow(QMainWindow):
             self._canvas.roughness = rough
             self._color_overrides = colors
             self._canvas.color_overrides = colors
-            if self._canvas.molecule:
-                self._legend.update_for(self._canvas.molecule, colors)
-            self._canvas.request_render()
-
-        def _axes_live_update(show_xyz, show_abc, xyz_pos, abc_pos):
             self._canvas.show_axes = show_xyz
             self._canvas.show_principal_axes = show_abc
             self._canvas.axes_position = xyz_pos
             self._canvas.principal_axes_position = abc_pos
+            if self._canvas.molecule:
+                self._legend.update_for(self._canvas.molecule, colors)
             self._canvas.request_render()
 
-        dlg = AppearanceDialog(*orig, live_callback=_live_update,
-                               axes_live_callback=_axes_live_update, parent=self)
+        dlg = SettingsDialog(
+            orig[0], orig[1], orig[2], orig[3], orig[4], orig[5],
+            atom_border_mode=orig[6], atom_border_scale=orig[7], atom_border_width=orig[8],
+            bond_color=orig[9], lighting_intensity=orig[10],
+            light_position=orig[11], roughness=orig[12],
+            show_axes=orig[13], show_principal_axes=orig[14],
+            axes_position=orig[15], principal_axes_position=orig[16],
+            live_callback=_live_update, parent=self,
+        )
+        dlg.tabs.setCurrentIndex(tab_index)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_theme(dlg.theme)
+            self._canvas.background = dlg.bg_color
             self._canvas.atom_scale = dlg.ball_scale
             self._canvas.bond_width_px = dlg.bond_width
             self._canvas.bond_style = dlg.bond_style
@@ -4140,7 +4172,8 @@ class MainWindow(QMainWindow):
                 self._legend.update_for(self._canvas.molecule, dlg._color_overrides)
             self._canvas.request_render()
         else:
-            (self._canvas.atom_scale, self._canvas.bond_width_px,
+            (self._current_theme, self._canvas.background,
+             self._canvas.atom_scale, self._canvas.bond_width_px,
              self._canvas.bond_style, self._color_overrides,
              self._canvas.atom_border_mode, self._canvas.atom_border_scale,
              self._canvas.atom_border_width, self._canvas.bond_color,
@@ -4156,30 +4189,8 @@ class MainWindow(QMainWindow):
                 self._legend.update_for(self._canvas.molecule, self._color_overrides)
             self._canvas.request_render()
 
-    def _edit_settings(self):
-        orig_theme = self._current_theme
-        orig_bg    = self._canvas.background
-
-        def _live_update(theme, bg):
-            if theme != self._current_theme:
-                self._apply_theme(theme)
-            self._canvas.background = bg
-            self._canvas.request_render()
-
-        dlg = SettingsDialog(
-            orig_theme,
-            orig_bg,
-            live_callback=_live_update,
-            parent=self,
-        )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._apply_theme(dlg.theme)
-            self._canvas.background = dlg.bg_color
-            self._canvas.request_render()
-        else:
-            self._apply_theme(orig_theme)
-            self._canvas.background = orig_bg
-            self._canvas.request_render()
+    def _edit_style(self):
+        self._edit_settings(tab_index=2)
 
     def _edit_atom_colors(self):
         mol = self._canvas.molecule
