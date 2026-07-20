@@ -952,22 +952,24 @@ def interpolate_color(c1: str, c2: str, t: float) -> str:
 
 def compute_gradient_stops(
     base: str, dark: str, li: float,
-    glossiness: float, whiteness: float, roughness: float,
+    roughness: float = 1.0,
     edge_fn=None,
 ):
     if edge_fn is None:
         edge_fn = lambda b, d, l: darken(b, 0.65 * l)
-    rv = 1.0 - roughness
-    rs = 1.5 - rv
-    ws = whiteness / 0.70
-    rf = 0.3 + rv * 1.4
-    pos = [min(1.0, p * rf * glossiness) for p in (0.18, 0.48, 0.78)]
+    r = max(0.0, roughness)
+    spread = 0.3 + r * 0.7
+    hi = max(0.0, 1.0 - r * 0.4)
+    ef = max(0.0, 1.0 - r * 0.35)
+    p1 = min(0.18 * spread, 0.35)
+    p2 = min(0.48 * spread, 0.65)
+    p3 = min(0.78 * spread, 0.85)
     return [
-        (0.00,  lighten(base, whiteness * li * rs)),
-        (pos[0], lighten(base, 0.40 * ws * li * rs)),
-        (pos[1], lighten(base, 0.15 * ws * li * rs)),
-        (pos[2], base),
-        (1.00,  edge_fn(base, dark, li * rs)),
+        (0.00,  lighten(base, 0.70 * li * hi)),
+        (p1,    lighten(base, 0.40 * li * hi)),
+        (p2,    lighten(base, 0.15 * li * hi)),
+        (p3,    base),
+        (1.00,  edge_fn(base, dark, li * ef)),
     ]
 
 # Light position presets: maps name -> (gradient_cx, gradient_cy, Lx, Ly, Lz)
@@ -1485,9 +1487,7 @@ def render_molecule(
     atom_border_width: float = 2.0,
     lighting_intensity: float = 1.0,
     light_position: str = "top-left",
-    glossiness: float = 1.0,
-    whiteness: float = 0.70,
-    roughness: float = 0.5,
+    roughness: float = 1.0,
     show_axes: bool = False,
     show_principal_axes: bool = False,
     axes_position: str = "bottom-left",
@@ -1559,7 +1559,7 @@ def render_molecule(
         g["fx"]=grad_cx; g["fy"]=grad_cy
         g["gradientUnits"] = "objectBoundingBox"
         for pct, color in compute_gradient_stops(
-                base, dark, li, glossiness, whiteness, roughness):
+                base, dark, li, roughness):
             g.add_stop_color(f"{pct*100:.1f}%", color, 1.0)
         defs.add(g)
         registered.add(gid)
@@ -1763,7 +1763,7 @@ def render_molecule(
                 d = 1.0 - r
                 li = lighting_intensity
                 stops = compute_gradient_stops(
-                    base, dark, li, glossiness, whiteness, roughness,
+                    base, dark, li, roughness,
                     edge_fn=lambda b, d, l: interpolate_color(b, d, l))
                 if d <= 0: return stops[0][1]
                 if d >= 1: return stops[-1][1]
@@ -1827,7 +1827,7 @@ def render_molecule(
                 d = 1.0 - ratio
                 li = lighting_intensity
                 stops = compute_gradient_stops(
-                    base, dark, li, glossiness, whiteness, roughness,
+                    base, dark, li, roughness,
                     edge_fn=lambda b, d, l: interpolate_color(b, d, l))
                 if d <= 0: return stops[0][1]
                 if d >= 1: return stops[-1][1]

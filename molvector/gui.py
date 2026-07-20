@@ -448,7 +448,7 @@ class AppearanceDialog(QDialog):
                  atom_border_mode="scaled", atom_border_scale=1.04, atom_border_width=2.0,
                  bond_color="#444444", lighting_intensity=1.0,
                  light_position="top-left",
-                 glossiness=1.0, whiteness=0.70, roughness=0.5,
+                 roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
                  live_callback=None, axes_live_callback=None, parent=None):
@@ -461,7 +461,7 @@ class AppearanceDialog(QDialog):
                       dict(color_overrides), atom_border_mode, atom_border_scale,
                       atom_border_width, bond_color,
                       lighting_intensity, light_position,
-                      glossiness, whiteness, roughness,
+                      roughness,
                       show_axes, show_principal_axes,
                       axes_position, principal_axes_position)
 
@@ -518,35 +518,9 @@ class AppearanceDialog(QDialog):
         self._light_pos_btn.clicked.connect(self._pick_light_position)
         form.addRow("Light Position:", self._light_pos_btn)
 
-        # Glossiness
-        self._glossiness_slider = QSlider(Qt.Orientation.Horizontal)
-        self._glossiness_slider.setRange(10, 200)
-        self._glossiness_slider.setValue(int(glossiness * 100))
-        self._glossiness_slider.setFixedWidth(160)
-        self._glossiness_lbl = QLabel(f"{glossiness:.2f}")
-        self._glossiness_slider.valueChanged.connect(self._on_change)
-        self._glossiness_slider.installEventFilter(self)
-        glossiness_row = QHBoxLayout()
-        glossiness_row.addWidget(self._glossiness_slider)
-        glossiness_row.addWidget(self._glossiness_lbl)
-        form.addRow("Glossiness:", glossiness_row)
-
-        # Whiteness
-        self._whiteness_slider = QSlider(Qt.Orientation.Horizontal)
-        self._whiteness_slider.setRange(0, 100)
-        self._whiteness_slider.setValue(int(whiteness * 100))
-        self._whiteness_slider.setFixedWidth(160)
-        self._whiteness_lbl = QLabel(f"{whiteness:.2f}")
-        self._whiteness_slider.valueChanged.connect(self._on_change)
-        self._whiteness_slider.installEventFilter(self)
-        whiteness_row = QHBoxLayout()
-        whiteness_row.addWidget(self._whiteness_slider)
-        whiteness_row.addWidget(self._whiteness_lbl)
-        form.addRow("Whiteness:", whiteness_row)
-
         # Roughness
         self._roughness_slider = QSlider(Qt.Orientation.Horizontal)
-        self._roughness_slider.setRange(0, 100)
+        self._roughness_slider.setRange(0, 200)
         self._roughness_slider.setValue(int(roughness * 100))
         self._roughness_slider.setFixedWidth(160)
         self._roughness_lbl = QLabel(f"{roughness:.2f}")
@@ -664,12 +638,8 @@ class AppearanceDialog(QDialog):
                 self._bondw_slider.setValue(int(cfg.get("bond_width_px", 10)))
             elif obj is self._lighting_slider:
                 self._lighting_slider.setValue(int(cfg.get("lighting_intensity", 1.0) * 100))
-            elif obj is self._glossiness_slider:
-                self._glossiness_slider.setValue(int(cfg.get("glossiness", 1.0) * 100))
-            elif obj is self._whiteness_slider:
-                self._whiteness_slider.setValue(int(cfg.get("whiteness", 0.70) * 100))
             elif obj is self._roughness_slider:
-                self._roughness_slider.setValue(int(cfg.get("roughness", 0.5) * 100))
+                self._roughness_slider.setValue(int(cfg.get("roughness", 1.0) * 100))
             elif obj is self._border_slider:
                 mode = self._border_mode.currentText().lower()
                 if mode == "constant":
@@ -698,8 +668,6 @@ class AppearanceDialog(QDialog):
         self._ball_lbl.setText(f"{self.ball_scale:.2f}")
         self._bondw_lbl.setText(f"{self.bond_width:.0f}")
         self._lighting_lbl.setText(f"{self.lighting_intensity:.2f}")
-        self._glossiness_lbl.setText(f"{self.glossiness:.2f}")
-        self._whiteness_lbl.setText(f"{self.whiteness:.2f}")
         self._roughness_lbl.setText(f"{self.roughness:.2f}")
         self._update_border_visibility()
         if self._live_callback and hasattr(self, '_border_slider'):
@@ -708,7 +676,7 @@ class AppearanceDialog(QDialog):
                 self._color_overrides, self.border_mode, self.border_scale,
                 self.border_width, self.bond_color,
                 self.lighting_intensity, self.light_position,
-                self.glossiness, self.whiteness, self.roughness,
+                self.roughness,
             )
 
     def _on_style_change(self, text: str):
@@ -774,14 +742,6 @@ class AppearanceDialog(QDialog):
         return self._light_position
 
     @property
-    def glossiness(self) -> float:
-        return self._glossiness_slider.value() / 100.0
-
-    @property
-    def whiteness(self) -> float:
-        return self._whiteness_slider.value() / 100.0
-
-    @property
     def roughness(self) -> float:
         return self._roughness_slider.value() / 100.0
 
@@ -830,8 +790,6 @@ class AppearanceDialog(QDialog):
             "atom_border_width": self.border_width,
             "lighting_intensity": self.lighting_intensity,
             "light_position": self.light_position,
-            "glossiness": self.glossiness,
-            "whiteness": self.whiteness,
             "roughness": self.roughness,
             "color_overrides": self._color_overrides,
             "show_axes": self.show_axes,
@@ -856,9 +814,7 @@ class AppearanceDialog(QDialog):
         self._lighting_slider.setValue(100)
         self._light_position = "top-left"
         self._light_pos_btn.setText("Top left")
-        self._glossiness_slider.setValue(100)
-        self._whiteness_slider.setValue(70)
-        self._roughness_slider.setValue(50)
+        self._roughness_slider.setValue(100)
         self._border_mode.setCurrentText("Scaled")
         self._border_slider.setValue(104)
         self._color_overrides = {}
@@ -1942,9 +1898,7 @@ class MoleculeCanvas(QSvgWidget):
         self.color_overrides: dict = {}
         self.lighting_intensity: float = 1.0
         self.light_position: str = "Top left"
-        self.glossiness: float = 1.0
-        self.whiteness: float = 0.70
-        self.roughness: float = 0.5
+        self.roughness: float = 1.0
         self.show_axes: bool = False
         self.show_principal_axes: bool = False
         self.axes_position: str = "bottom-left"
@@ -2099,8 +2053,6 @@ class MoleculeCanvas(QSvgWidget):
                 atom_border_width=self.atom_border_width,
                 lighting_intensity=self.lighting_intensity,
                 light_position=self.light_position,
-                glossiness=self.glossiness,
-                whiteness=self.whiteness,
                 roughness=self.roughness,
                 show_axes=self.show_axes,
                 show_principal_axes=self.show_principal_axes,
@@ -2889,8 +2841,10 @@ class MainWindow(QMainWindow):
         edit_menu = mb.addMenu("&Edit")
 
         act_appearance = QAction("&Appearance…", self)
+        act_appearance.setShortcut(_mod("Ctrl+;"))
         act_appearance.triggered.connect(self._edit_appearance)
         edit_menu.addAction(act_appearance)
+        self._shortcut_actions["appearance"] = act_appearance
 
         edit_menu.addSeparator()
 
@@ -4120,8 +4074,6 @@ class MainWindow(QMainWindow):
         self._canvas.atom_border_width = cfg.get("atom_border_width", self._canvas.atom_border_width)
         self._canvas.lighting_intensity = cfg.get("lighting_intensity", self._canvas.lighting_intensity)
         self._canvas.light_position = cfg.get("light_position", self._canvas.light_position)
-        self._canvas.glossiness = cfg.get("glossiness", self._canvas.glossiness)
-        self._canvas.whiteness = cfg.get("whiteness", self._canvas.whiteness)
         self._canvas.roughness = cfg.get("roughness", self._canvas.roughness)
         self._color_overrides = cfg.get("color_overrides", {})
         self._canvas.color_overrides = self._color_overrides
@@ -4137,12 +4089,11 @@ class MainWindow(QMainWindow):
                 self._canvas.atom_border_mode, self._canvas.atom_border_scale,
                 self._canvas.atom_border_width, self._canvas.bond_color,
                 self._canvas.lighting_intensity, self._canvas.light_position,
-                self._canvas.glossiness, self._canvas.whiteness,
                 self._canvas.roughness,
                 self._canvas.show_axes, self._canvas.show_principal_axes,
                 self._canvas.axes_position, self._canvas.principal_axes_position)
 
-        def _live_update(ball, bw, style, colors, border_mode, border_scale, border_width, bcol, lighting, pos, gloss, white, rough):
+        def _live_update(ball, bw, style, colors, border_mode, border_scale, border_width, bcol, lighting, pos, rough):
             self._canvas.atom_scale = ball
             self._canvas.bond_width_px = bw
             self._canvas.bond_style = style
@@ -4152,8 +4103,6 @@ class MainWindow(QMainWindow):
             self._canvas.atom_border_width = border_width
             self._canvas.lighting_intensity = lighting
             self._canvas.light_position = pos
-            self._canvas.glossiness = gloss
-            self._canvas.whiteness = white
             self._canvas.roughness = rough
             self._color_overrides = colors
             self._canvas.color_overrides = colors
@@ -4180,8 +4129,6 @@ class MainWindow(QMainWindow):
             self._canvas.atom_border_width = dlg.border_width
             self._canvas.lighting_intensity = dlg.lighting_intensity
             self._canvas.light_position = dlg.light_position
-            self._canvas.glossiness = dlg.glossiness
-            self._canvas.whiteness = dlg.whiteness
             self._canvas.roughness = dlg.roughness
             self._canvas.show_axes = dlg.show_axes
             self._canvas.show_principal_axes = dlg.show_principal_axes
@@ -4199,8 +4146,6 @@ class MainWindow(QMainWindow):
              self._canvas.atom_border_width, self._canvas.bond_color,
              self._canvas.lighting_intensity,
              self._canvas.light_position,
-             self._canvas.glossiness,
-             self._canvas.whiteness,
              self._canvas.roughness,
              self._canvas.show_axes,
              self._canvas.show_principal_axes,
