@@ -2829,22 +2829,21 @@ class MoleculeCanvas(QSvgWidget):
         """Geometrically re-place all H atoms (no FF solver needed)."""
         if not self.molecule:
             return
-        done = set()
-        for b in self.molecule.bonds:
-            for parent_idx in (b.i, b.j):
-                if parent_idx in done:
-                    continue
-                if self.molecule.atoms[parent_idx].element == "H":
-                    continue
-                has_h = False
-                for b2 in self.molecule.bonds:
-                    other = b2.j if b2.i == parent_idx else (b2.i if b2.j == parent_idx else -1)
-                    if other >= 0 and self.molecule.atoms[other].element == "H":
-                        has_h = True
-                        break
-                if has_h:
-                    done.add(parent_idx)
-                    self._apply_auto_h(self.molecule.atoms[parent_idx])
+        parents_to_relax = []
+        for atom_idx, atom in enumerate(self.molecule.atoms):
+            if atom.element == "H":
+                continue
+            has_h = False
+            for b in self.molecule.bonds:
+                other = b.j if b.i == atom_idx else (b.i if b.j == atom_idx else -1)
+                if 0 <= other < len(self.molecule.atoms) and self.molecule.atoms[other].element == "H":
+                    has_h = True
+                    break
+            if has_h:
+                parents_to_relax.append(atom)
+        for atom in parents_to_relax:
+            if atom in self.molecule.atoms:
+                self._apply_auto_h(atom)
 
     def _get_non_h_indices(self) -> List[int]:
         if not self.molecule: return []
