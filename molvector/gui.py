@@ -25,7 +25,7 @@ Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
   Edit          Settings / Style / Shortcuts / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode
   View          Reset View / Preset orientations / Overlay Settings
-  Calculations  Generate G16 Input / Calculate Rotational Constants / Calculation Results
+  Calculations  Generate G16 Input / Calculate Rotational Constants / Calculate Dipole Moment / Calculation Results
   Build         Clean / Undo / Redo / Optimize / Disable Bond Order
   Help          Open Test Molecule / About
 
@@ -71,7 +71,7 @@ from molvector.render import (
     chemical_formula, molecular_mass, VibrationalMode, ExcitedState,
     save_xyz, save_gaussian_input, save_pdb, save_mol, project_molecule,
     Atom, Bond,
-    optimize_geometry, HAS_OPENBABEL, calculate_rotational_constants, generate_inchi, check_valence_issues,
+    optimize_geometry, HAS_OPENBABEL, calculate_rotational_constants, calculate_dipole_moment, generate_inchi, check_valence_issues,
 )
 
 # ── shortcut modifier prefix ─────────────────────────────────────────────────
@@ -2893,12 +2893,13 @@ class MainWindow(QMainWindow):
         "preset_left": "",
         "preset_right": "",
         "preset_perspective": "",
-        "preset_bc_plane": "",
-        "preset_ac_plane": "",
-        "preset_ab_plane": "",
+        "preset_bc_plane": "1",
+        "preset_ac_plane": "2",
+        "preset_ab_plane": "3",
         "overlay_settings": "",
         "g16_input": "",
         "rotational_constants": "",
+        "dipole_moment": "",
         "calc_results": _mod("Ctrl+M"),
         "clean_molecule": _mod("Ctrl+L"),
         "undo": _mod("Ctrl+Z"),
@@ -3107,6 +3108,7 @@ class MainWindow(QMainWindow):
         presets_menu.addSeparator()
         for idx, label in [(0, "BC plane"), (1, "AC plane"), (2, "AB plane")]:
             a = QAction(label, self)
+            a.setShortcut(str(idx + 1))
             a.triggered.connect(lambda _, i=idx: self._canvas.set_principal_axis_preset(i))
             presets_menu.addAction(a)
             key = ["preset_bc_plane", "preset_ac_plane", "preset_ab_plane"][idx]
@@ -3130,6 +3132,11 @@ class MainWindow(QMainWindow):
         act_rotconstant.triggered.connect(self._calculate_rotational_constants)
         self._menu_calc.addAction(act_rotconstant)
         self._shortcut_actions["rotational_constants"] = act_rotconstant
+
+        act_dipole = QAction("Calculate Dipole Moment", self)
+        act_dipole.triggered.connect(self._calculate_dipole_moment)
+        self._menu_calc.addAction(act_dipole)
+        self._shortcut_actions["dipole_moment"] = act_dipole
 
         # ── Build ──
         self._menu_build = mb.addMenu("&Build")
@@ -3466,8 +3473,8 @@ class MainWindow(QMainWindow):
                                  f"{type(e).__name__}: {e}")
 
     def _update_calculations_menu(self, mol: Molecule):
-        # Remove any actions beyond the first (Generate G16 Input…)
-        while len(self._menu_calc.actions()) > 2:
+        # Remove any actions beyond the first three (G16 Input, Rotational Constants, Dipole Moment)
+        while len(self._menu_calc.actions()) > 3:
             self._menu_calc.removeAction(self._menu_calc.actions()[-1])
 
         if mol and (mol.vibrational_modes or mol.excited_states):
@@ -3513,6 +3520,48 @@ class MainWindow(QMainWindow):
     
         QMessageBox.information(self, 'Rotational constants', f"Rotational constants:\nA: {rot_consts[0]:10.4f} MHz\nB: {rot_consts[1]:10.4f} MHz\nC: {rot_consts[2]:10.4f} MHz")
         return(rot_consts)
+
+    def _calculate_dipole_moment(self):
+        mol = self._canvas.molecule
+        if not mol:
+            QMessageBox.information(self, 'No molecule', "Load or build a molecule first.")
+            return
+
+        if not HAS_OPENBABEL:
+            QMessageBox.warning(
+                self, "OpenBabel Not Found",
+                "Dipole moment estimation requires OpenBabel.\n\n"
+                "Install it with:  pip install openbabel-wheel\n\n"
+                "If already installed, set the BABEL_DATADIR environment "
+                "variable to the folder containing UFF.prm."
+            )
+            return
+
+        mu_vec, mu_mag, atom_charges = calculate_dipole_moment(mol)
+        if mu_mag is None:
+            QMessageBox.information(self, 'Dipole moment',
+                "Could not compute dipole moment.\n"
+                "Ensure the molecule has at least 2 atoms and valid coordinates.")
+            return
+
+        formula = chemical_formula(mol)
+
+        lines = [
+            f"Molecule:  {formula}",
+            f"Charge:    {mol.charge}",
+            "",
+            f"|μ| = {mu_mag:.4f} Debye",
+            "",
+            f"μx = {mu_vec[0]:+.4f} D",
+            f"μy = {mu_vec[1]:+.4f} D",
+            f"μz = {mu_vec[2]:+.4f} D",
+            "",
+            "Partial charges (EEM):",
+        ]
+        for elem, q in atom_charges:
+            lines.append(f"  {elem:2s}  {q:+.4f} e")
+
+        QMessageBox.information(self, 'Dipole moment', "\n".join(lines))
 
 
     def _on_anim_toggle(self, enabled: bool):

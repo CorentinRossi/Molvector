@@ -22,6 +22,9 @@ Writers:
 
 Force Field:
   optimize_geometry(mol, ...) — OpenBabel-backed MMFF94s/UFF geometry optimization
+
+Properties:
+  calculate_dipole_moment(mol, ...) — Gasteiger-charge dipole moment estimation
 """
 
 import math, random, string, os, sys
@@ -1179,6 +1182,96 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
         mol.atoms[i].z = oba.GetZ()
 
     return int(max_steps)
+
+
+def calculate_dipole_moment(mol: Molecule):
+    """
+    Estimate the dipole moment using EEM partial charges via OpenBabel.
+
+    The Electronegativity Equalization Method (EEM) distributes partial
+    charges so that each atom reaches a common electronegativity, then the
+    dipole moment is computed relative to the centre of mass.
+
+    Returns
+    -------
+    tuple (dipole_vector, dipole_magnitude, atom_charges)
+        dipole_vector   : np.ndarray of shape (3,) — (μx, μy, μz) in Debye
+        dipole_magnitude: float — |μ| in Debye
+        atom_charges    : list of (element, charge) tuples
+
+    Returns (None, None, None) when OpenBabel is unavailable or the
+    molecule is empty.
+    """
+    if not mol.atoms or not HAS_OPENBABEL:
+        return None, None, None
+    if len(mol.atoms) < 2:
+        return None, None, None
+
+    from contextlib import redirect_stderr
+    import os
+    from openbabel import openbabel as ob
+
+    _SYM_TO_Z = {
+        "H":1, "He":2, "Li":3, "Be":4, "B":5, "C":6, "N":7, "O":8, "F":9,
+        "Ne":10, "Na":11, "Mg":12, "Al":13, "Si":14, "P":15, "S":16,
+        "Cl":17, "Ar":18, "K":19, "Ca":20, "Fe":26, "Ni":28, "Cu":29,
+        "Zn":30, "Br":35, "I":53, "Au":79, "Hg":80,
+    }
+
+    n = len(mol.atoms)
+
+    # ── 1. Build OBMol ────────────────────────────────────────────────────
+    obmol = ob.OBMol()
+    obmol.SetDimension(3)
+
+    for a in mol.atoms:
+        oba = obmol.NewAtom()
+        oba.SetAtomicNum(_SYM_TO_Z.get(a.element, 6))
+        oba.SetVector(a.x, a.y, a.z)
+
+    _kekule_prepass(mol, obmol)
+
+    for b in mol.bonds:
+        if b.order in (1, 2, 3):
+            obmol.AddBond(int(b.i) + 1, int(b.j) + 1, int(b.order))
+
+    if obmol.NumBonds() == 0:
+        obmol.ConnectTheDots()
+
+    obmol.SetTotalCharge(mol.charge)
+
+    # ── 2. Compute EEM partial charges ────────────────────────────────────
+    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+        charge_model = ob.OBChargeModel.FindType("eem")
+        if charge_model is None:
+            return None, None, None
+        if not charge_model.ComputeCharges(obmol):
+            return None, None, None
+
+    # ── 3. Extract charges and centre of mass ────────────────────────────
+    charges = []
+    com = np.zeros(3)
+    total_mass = 0.0
+    for i in range(n):
+        oba = obmol.GetAtom(i + 1)
+        q = oba.GetPartialCharge()
+        elem = mol.atoms[i].element
+        charges.append((elem, q))
+        mass = ATOMIC_MASSES.get(elem, 0.0)
+        com += mass * np.array([mol.atoms[i].x, mol.atoms[i].y, mol.atoms[i].z])
+        total_mass += mass
+    if total_mass > 0:
+        com /= total_mass
+
+    # ── 4. Dipole moment vector (Debye) ──────────────────────────────────
+    DEBYE_PER_EANGSTROM = 4.803204
+    mu = np.zeros(3)
+    for i in range(n):
+        r = np.array([mol.atoms[i].x, mol.atoms[i].y, mol.atoms[i].z]) - com
+        mu += charges[i][1] * r
+    mu *= DEBYE_PER_EANGSTROM
+
+    return mu, float(np.linalg.norm(mu)), charges
 
 
 def generate_inchi(mol: Molecule) -> Optional[str]:
