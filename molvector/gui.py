@@ -105,8 +105,13 @@ def load_colored_icon(svg_path: str, color: str, size: int = 22) -> QIcon:
     return QIcon(pix)
 
 def set_icons(app, win):
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "molvector_macos.png")
+    elif system == "Linux":
+        icon_path = os.path.join(os.path.dirname(__file__), "assets", "molvector_linux.png")
+    elif system == "Windows":
+        icon_path = os.path.join(os.path.dirname(__file__), "assets", "molvector_windows.png")
     else:
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "icons", "icon.svg")
     
