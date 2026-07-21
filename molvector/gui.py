@@ -116,9 +116,6 @@ def set_icons(app, win):
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "icons", "icon.svg")
     
     if not os.path.isfile(icon_path):
-        icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.svg")
-    
-    if not os.path.isfile(icon_path):
         return
     
     icon = QIcon(icon_path)
