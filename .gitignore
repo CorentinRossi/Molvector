@@ -6,4 +6,5 @@ __pycache__/
 dist/
 build/
 molvector_config.json
+molvector/molvector_last_molecule.txt
 *.egg/

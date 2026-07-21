@@ -1116,6 +1116,8 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
     if len(mol.atoms) < 2:
         return 0
 
+    from contextlib import redirect_stderr
+    import os
     from openbabel import openbabel as ob
 
     n = len(mol.atoms)
@@ -1153,19 +1155,20 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
     # ── 3. Select and set up force field ──────────────────────────────────
     ff = None
     ff_name = "MMFF94s"
-    ff = ob.OBForceField.FindForceField(ff_name)
-    if not ff.Setup(obmol):
-        ff = ob.OBForceField.FindForceField("UFF")
-        ff_name = "UFF"
+    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+        ff = ob.OBForceField.FindForceField(ff_name)
         if not ff.Setup(obmol):
-            return 0
+            ff = ob.OBForceField.FindForceField("UFF")
+            ff_name = "UFF"
+            if not ff.Setup(obmol):
+                return 0
 
-    if fixed_indices:
-        for idx in fixed_indices:
-            ff.SetFixAtom(int(idx) + 1)  # OB is 1-indexed
+        if fixed_indices:
+            for idx in fixed_indices:
+                ff.SetFixAtom(int(idx) + 1)  # OB is 1-indexed
 
-    # ── 4. Optimize ───────────────────────────────────────────────────────
-    ff.ConjugateGradients(int(max_steps))
+        # ── 4. Optimize ───────────────────────────────────────────────────
+        ff.ConjugateGradients(int(max_steps))
 
     # ── 5. Read back coordinates ──────────────────────────────────────────
     ff.GetCoordinates(obmol)
@@ -1261,6 +1264,9 @@ def _generate_inchi_rdkit(mol: Molecule) -> Optional[str]:
 
 
 def _generate_inchi_openbabel(mol: Molecule) -> Optional[str]:
+    from contextlib import redirect_stderr
+    import os
+
     from openbabel import openbabel as ob
 
     _SYM_TO_Z = {
@@ -1293,7 +1299,8 @@ def _generate_inchi_openbabel(mol: Molecule) -> Optional[str]:
 
     conv = ob.OBConversion()
     conv.SetOutFormat("inchi")
-    inchi = conv.WriteString(obmol).strip()
+    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+        inchi = conv.WriteString(obmol).strip()
     return inchi if inchi else None
 
 
@@ -1927,7 +1934,7 @@ def render_molecule(
     if not export_mode:
         dwg.add(dwg.text(
             mol.name, insert=(16,26),
-            font_size=15,font_family="'Courier New',monospace",
+            font_size=15,font_family="monospace",
             fill="#88ccff",opacity=0.75,
         ))
 
@@ -1957,7 +1964,7 @@ def render_molecule(
             tx = origin_x + rv[0] * (axis_len + 6) - 3
             ty = origin_y - rv[1] * (axis_len + 6) + 3
             dwg.add(dwg.text(lbl, insert=(tx, ty),
-                             font_size=8, font_family="'Courier New',monospace",
+                             font_size=8, font_family="monospace",
                              fill=col, font_weight="bold"))
 
     if show_principal_axes and not export_mode and len(mol.atoms) >= 2:
@@ -1990,7 +1997,7 @@ def render_molecule(
             tx = origin_x + rv[0] * (axis_len + 6) - 3
             ty = origin_y - rv[1] * (axis_len + 6) + 3
             dwg.add(dwg.text(lbl, insert=(tx, ty),
-                             font_size=8, font_family="'Courier New',monospace",
+                             font_size=8, font_family="monospace",
                              fill=col, font_weight="bold"))
 
     dwg.save()

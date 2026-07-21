@@ -23,8 +23,8 @@ Align mode (A):
 
 Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
-  Edit          Settings / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode / Shortcuts
-  View          Reset View / Preset orientations / Background Colour
+  Edit          Settings / Style / Shortcuts / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode
+  View          Reset View / Preset orientations / Overlay Settings
   Calculations  Generate G16 Input / Calculate Rotational Constants / Calculation Results
   Build         Clean / Undo / Redo / Optimize / Disable Bond Order
   Help          Open Test Molecule / About
@@ -450,10 +450,10 @@ class SettingsDialog(QDialog):
                  light_position="top-left", roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
-                 live_callback=None, parent=None):
+                 restore_molecule=False, live_callback=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
         self._live_callback = live_callback
         self._color_overrides = color_overrides
 
@@ -463,8 +463,8 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        self._build_general_tab(theme, bg_color)
-        self._build_overlay_tab(show_axes, show_principal_axes, axes_position, principal_axes_position)
+        self._build_general_tab(theme, restore_molecule)
+        self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position)
         self._build_atoms_bonds_tab(atom_scale, bond_width, bond_style,
                                      atom_border_mode, atom_border_scale, atom_border_width,
                                      bond_color, lighting_intensity, light_position, roughness)
@@ -485,7 +485,7 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(dialog_btns)
         layout.addLayout(btn_row)
 
-    def _build_general_tab(self, theme, bg_color):
+    def _build_general_tab(self, theme, restore_molecule):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
@@ -493,19 +493,25 @@ class SettingsDialog(QDialog):
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Dark", "Light"])
         self._theme_combo.setCurrentText(theme.capitalize())
+        self._theme_combo.setMinimumWidth(100)
         self._theme_combo.currentTextChanged.connect(self._on_change)
         form.addRow("Theme:", self._theme_combo)
+
+        self._restore_cb = QCheckBox("Restore molecule at login")
+        self._restore_cb.setChecked(restore_molecule)
+        self._restore_cb.toggled.connect(self._on_change)
+        form.addRow("", self._restore_cb)
+
+        self.tabs.addTab(page, "&General")
+
+    def _build_overlay_tab(self, bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position):
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setSpacing(8)
 
         self._bg_btn = ColorButton(bg_color)
         self._bg_btn.colorChanged.connect(self._on_change)
         form.addRow("Background:", self._bg_btn)
-
-        self.tabs.addTab(page, "&General")
-
-    def _build_overlay_tab(self, show_axes, show_principal_axes, axes_position, principal_axes_position):
-        page = QWidget()
-        form = QFormLayout(page)
-        form.setSpacing(8)
 
         self._show_axes_cb = QCheckBox("Show XYZ Axes")
         self._show_axes_cb.setChecked(show_axes)
@@ -568,6 +574,7 @@ class SettingsDialog(QDialog):
 
         self._style_combo = QComboBox()
         self._style_combo.addItems(["Splitted", "Unicolor", "Gradient"])
+        self._style_combo.setMinimumWidth(90)
         self._bond_color = bond_color
         style_row = QHBoxLayout()
         style_row.addWidget(self._style_combo)
@@ -615,7 +622,7 @@ class SettingsDialog(QDialog):
 
         self._border_mode = QComboBox()
         self._border_mode.addItems(["None", "Scaled", "Constant"])
-        self._border_mode.setFixedWidth(90)
+        self._border_mode.setMinimumWidth(90)
         self._border_mode.setCurrentText(atom_border_mode.capitalize())
         self._border_mode.currentTextChanged.connect(self._on_mode_change)
 
@@ -632,6 +639,12 @@ class SettingsDialog(QDialog):
         self._update_border_visibility()
 
         self.tabs.addTab(page, "Atoms && Bonds")
+
+        self._ball_slider.installEventFilter(self)
+        self._bondw_slider.installEventFilter(self)
+        self._roughness_slider.installEventFilter(self)
+        self._lighting_slider.installEventFilter(self)
+        self._border_slider.installEventFilter(self)
 
     def _set_border_slider_for_mode(self, mode, scale, width):
         if mode == "constant":
@@ -679,6 +692,27 @@ class SettingsDialog(QDialog):
                 self.axes_position, self.principal_axes_position,
             )
 
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonDblClick:
+            cfg = self.load_config() or {}
+            acfg = cfg.get("atoms_bonds", {})
+            if obj is self._ball_slider:
+                self._ball_slider.setValue(int(acfg.get("atom_scale", 0.7) * 100))
+            elif obj is self._bondw_slider:
+                self._bondw_slider.setValue(int(acfg.get("bond_width_px", 10)))
+            elif obj is self._roughness_slider:
+                self._roughness_slider.setValue(int(acfg.get("roughness", 1.0) * 100))
+            elif obj is self._lighting_slider:
+                self._lighting_slider.setValue(int(acfg.get("lighting_intensity", 1.0) * 100))
+            elif obj is self._border_slider:
+                mode = self._border_mode.currentText().lower()
+                if mode == "constant":
+                    self._border_slider.setValue(int(acfg.get("atom_border_width", 2)))
+                else:
+                    self._border_slider.setValue(int(acfg.get("atom_border_scale", 1.04) * 100))
+            return True
+        return super().eventFilter(obj, event)
+
     def _pick_unicolor(self):
         col = QColorDialog.getColor(QColor(self._bond_color), self, "Choose Bond Color")
         if col.isValid():
@@ -716,6 +750,10 @@ class SettingsDialog(QDialog):
     @property
     def bg_color(self) -> str:
         return self._bg_btn.color()
+
+    @property
+    def restore_molecule(self) -> bool:
+        return self._restore_cb.isChecked()
 
     @property
     def ball_scale(self) -> float:
@@ -780,9 +818,10 @@ class SettingsDialog(QDialog):
 
     def _section_data(self, section: str) -> dict:
         if section == "general":
-            return {"theme": self.theme, "bg_color": self.bg_color}
+            return {"theme": self.theme, "restore_molecule": self.restore_molecule}
         if section == "overlay":
             return {
+                "bg_color": self.bg_color,
                 "show_axes": self.show_axes,
                 "show_principal_axes": self.show_principal_axes,
                 "axes_position": self.axes_position,
@@ -823,8 +862,9 @@ class SettingsDialog(QDialog):
     def _restore_section(self, section: str):
         if section == "general":
             self._theme_combo.setCurrentText("Light")
-            self._bg_btn.set_color("#ffffff")
+            self._restore_cb.setChecked(False)
         elif section == "overlay":
+            self._bg_btn.set_color("#ffffff")
             self._show_axes_cb.setChecked(False)
             self._show_principal_axes_cb.setChecked(False)
             self._axes_pos_combo.setCurrentText("Bottom left")
@@ -864,9 +904,10 @@ class SettingsDialog(QDialog):
             data = {
                 "general": {
                     "theme": data.get("theme", "light"),
-                    "bg_color": data.get("bg_color", "#ffffff"),
+                    "restore_molecule": data.get("restore_molecule", False),
                 },
                 "overlay": {
+                    "bg_color": data.get("bg_color", "#ffffff"),
                     "show_axes": data.get("show_axes", False),
                     "show_principal_axes": data.get("show_principal_axes", False),
                     "axes_position": data.get("axes_position", "bottom-left"),
@@ -1221,6 +1262,7 @@ class G16InputDialog(QDialog):
             row = QHBoxLayout()
             combo = QComboBox()
             combo.addItems(items + ["Custom"])
+            combo.setMinimumWidth(120)
             row.addWidget(combo)
             custom = QLineEdit()
             custom.setPlaceholderText("Enter custom value…")
@@ -1290,6 +1332,7 @@ class G16InputDialog(QDialog):
         mem_row = QHBoxLayout()
         self._mem_combo = QComboBox()
         self._mem_combo.addItems(["2GB", "4GB", "8GB", "16GB", "32GB", "64GB"])
+        self._mem_combo.setMinimumWidth(80)
         self._mem_combo.setCurrentText("8GB")
         self._mem_combo.currentTextChanged.connect(self._on_field_changed)
         mem_row.addWidget(self._mem_combo)
@@ -1302,7 +1345,7 @@ class G16InputDialog(QDialog):
         layout.addWidget(QLabel("Preview (editable):"))
         self._preview = QPlainTextEdit()
         self._preview.setMinimumHeight(180)
-        self._preview.setStyleSheet("font-family: 'Courier New', monospace;")
+        self._preview.setStyleSheet("font-family: monospace;")
         self._preview.textChanged.connect(self._on_preview_edited)
         layout.addWidget(self._preview)
 
@@ -1566,7 +1609,7 @@ class PeriodicTableDialog(QDialog):
         grid.setSpacing(3)
 
         btn_size = 52
-        btn_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        btn_font = QFont("", 10, QFont.Weight.Bold)
 
         by_Z = {}
         for sym, Z, r, c in _PERIODIC_TABLE_LAYOUT:
@@ -1606,7 +1649,7 @@ class PeriodicTableDialog(QDialog):
             self._all_buttons[sym] = btn
 
         # Headers for characteristic rows
-        label_font = QFont("Segoe UI", 8)
+        label_font = QFont("", 8)
         lbl_la = QLabel("Lanthanides")
         lbl_la.setFont(label_font)
         lbl_la.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1640,19 +1683,28 @@ class PeriodicTableDialog(QDialog):
 class ShortcutDialog(QDialog):
     CONFIG_FILE = os.path.join(os.path.dirname(__file__), "molvector_config.json")
 
-    def __init__(self, shortcut_actions: dict, parent=None):
+    def __init__(self, shortcut_actions: dict, alt_defaults: dict = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure Shortcuts")
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(640, 420)
         self._actions = dict(shortcut_actions)
+        self._alt_defaults = alt_defaults or {}
+        self._initial_primary = {}
+        self._initial_alt = {}
 
         layout = QVBoxLayout(self)
 
+        # Conflict warning label
+        self._conflict_lbl = QLabel()
+        self._conflict_lbl.setVisible(False)
+        layout.addWidget(self._conflict_lbl)
+
         # Table
-        self._table = QTableWidget(len(self._actions), 2)
-        self._table.setHorizontalHeaderLabels(["Action", "Shortcut"])
+        self._table = QTableWidget(len(self._actions), 3)
+        self._table.setHorizontalHeaderLabels(["Action", "Primary", "Alt"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
 
@@ -1662,11 +1714,22 @@ class ShortcutDialog(QDialog):
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._table.setItem(row, 0, name_item)
 
-            ks = QKeySequenceEdit(action.shortcut())
-            ks.setClearButtonEnabled(True)
-            self._table.setCellWidget(row, 1, ks)
-            self._editors.append(ks)
+            ks1 = QKeySequenceEdit(action.shortcut())
+            ks1.setClearButtonEnabled(True)
+            self._table.setCellWidget(row, 1, ks1)
+            ks1.keySequenceChanged.connect(self._check_conflicts)
 
+            alt_seq = self._alt_defaults.get(aid, "")
+            ks2 = QKeySequenceEdit(QKeySequence(alt_seq))
+            ks2.setClearButtonEnabled(True)
+            self._table.setCellWidget(row, 2, ks2)
+            ks2.keySequenceChanged.connect(self._check_conflicts)
+
+            self._editors.append((ks1, ks2))
+            self._initial_primary[aid] = ks1.keySequence().toString()
+            self._initial_alt[aid] = ks2.keySequence().toString()
+
+        self._check_conflicts()
         layout.addWidget(self._table)
 
         # Buttons
@@ -1686,18 +1749,48 @@ class ShortcutDialog(QDialog):
         btn_row.addWidget(btn_ok)
 
         btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.reject)
+        btn_cancel.clicked.connect(self._on_cancel)
         btn_row.addWidget(btn_cancel)
 
         layout.addLayout(btn_row)
 
+    def _check_conflicts(self):
+        usage = {}
+        for row, (aid, action) in enumerate(self._actions.items()):
+            for col, editor in enumerate([self._editors[row][0], self._editors[row][1]]):
+                ks = editor.keySequence()
+                if not ks.isEmpty():
+                    seq_str = ks.toString().lower()
+                    if seq_str not in usage:
+                        usage[seq_str] = []
+                    usage[seq_str].append((aid, action.text().replace("&", ""), col))
+
+        conflicts = {k: v for k, v in usage.items() if len(v) > 1}
+
+        if conflicts:
+            lines = []
+            for seq, items in conflicts.items():
+                names = [f"{name} ({'Alt' if c == 1 else 'Primary'})" for _, name, c in items]
+                lines.append(f"⚠ {seq} used by: {', '.join(names)}")
+            self._conflict_lbl.setText(
+                '<span style="color:#ff6b6b; font-weight:bold;">' +
+                "<br>".join(lines) +
+                '</span>'
+            )
+            self._conflict_lbl.setVisible(True)
+        else:
+            self._conflict_lbl.setVisible(False)
+
     def _restore_defaults(self):
         for row, (aid, action) in enumerate(self._actions.items()):
-            default = MainWindow.DEFAULT_SHORTCUTS.get(aid, "")
-            self._editors[row].setKeySequence(QKeySequence(default))
+            primary = MainWindow.DEFAULT_SHORTCUTS.get(aid, "")
+            alt = MainWindow.ALT_SHORTCUT_DEFAULTS.get(aid, "")
+            self._editors[row][0].setKeySequence(QKeySequence(primary))
+            self._editors[row][1].setKeySequence(QKeySequence(alt))
+        self._check_conflicts()
 
     def _make_default(self):
-        cfg = self._collect_shortcuts()
+        primary, alt = self._collect_shortcuts()
         config = {}
         try:
             if os.path.exists(self.CONFIG_FILE):
@@ -1705,7 +1798,8 @@ class ShortcutDialog(QDialog):
                     config = json.load(f)
         except Exception:
             pass
-        config["shortcuts"] = cfg
+        config["shortcuts"] = primary
+        config["alt_shortcuts"] = alt
         try:
             with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
@@ -1713,18 +1807,54 @@ class ShortcutDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save shortcuts:\n{e}")
 
-    def get_shortcuts(self) -> dict:
+    def _has_changes(self) -> bool:
+        for row, (aid, action) in enumerate(self._actions.items()):
+            ks1 = self._editors[row][0].keySequence().toString()
+            ks2 = self._editors[row][1].keySequence().toString()
+            if ks1 != self._initial_primary.get(aid, "") or ks2 != self._initial_alt.get(aid, ""):
+                return True
+        return False
+
+    def _on_cancel(self):
+        if self._has_changes():
+            ret = QMessageBox.warning(
+                self, "Unsaved Changes",
+                "You have unsaved shortcut changes. Discard them?",
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if ret == QMessageBox.StandardButton.Discard:
+                self.reject()
+        else:
+            self.reject()
+
+    def closeEvent(self, event):
+        if self._has_changes():
+            ret = QMessageBox.warning(
+                self, "Unsaved Changes",
+                "You have unsaved shortcut changes. Discard them?",
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if ret == QMessageBox.StandardButton.Discard:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
+
+    def get_shortcuts(self) -> tuple:
         return self._collect_shortcuts()
 
-    def _collect_shortcuts(self) -> dict:
-        result = {}
+    def _collect_shortcuts(self) -> tuple:
+        primary = {}
+        alt = {}
         for row, (aid, action) in enumerate(self._actions.items()):
-            ks = self._editors[row].keySequence()
-            if not ks.isEmpty():
-                result[aid] = ks.toString()
-            else:
-                result[aid] = ""
-        return result
+            ks1 = self._editors[row][0].keySequence()
+            ks2 = self._editors[row][1].keySequence()
+            primary[aid] = ks1.toString() if not ks1.isEmpty() else ""
+            alt[aid] = ks2.toString() if not ks2.isEmpty() else ""
+        return primary, alt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2745,19 +2875,48 @@ class MainWindow(QMainWindow):
         "export_view": _mod("Ctrl+E"),
         "quick_svg_export": _mod("Ctrl+Shift+X"),
         "quit": _mod("Ctrl+Q"),
-        "info": _mod("Ctrl+I"),
-        "settings": _mod("Ctrl+P"),
+        "settings": _mod("Ctrl+;"),
+        "style": _mod("Ctrl+="),
         "shortcuts": "",
-        "reset_view": "R",
-        "build_mode": "B",
+        "info": _mod("Ctrl+I"),
+        "charge": "",
+        "inchi": "",
         "selection_mode": "S",
+        "build_mode": "B",
         "align_mode": "A",
+        "reset_view": "R",
+        "reset_xyz_axes": "Shift+R",
+        "preset_top": "",
+        "preset_bottom": "",
+        "preset_front": "",
+        "preset_back": "",
+        "preset_left": "",
+        "preset_right": "",
+        "preset_perspective": "",
+        "preset_bc_plane": "",
+        "preset_ac_plane": "",
+        "preset_ab_plane": "",
+        "overlay_settings": "",
+        "g16_input": "",
+        "rotational_constants": "",
+        "calc_results": _mod("Ctrl+M"),
         "clean_molecule": _mod("Ctrl+L"),
         "undo": _mod("Ctrl+Z"),
         "redo": _mod("Ctrl+Shift+Z"),
-        "calc_results": _mod("Ctrl+M"),
+        "optimize_settings": "",
+        "bond_order": "",
         "open_test": _mod("Ctrl+Shift+T"),
+        "open_test_folder": "",
+        "about": "",
     }
+
+    ALT_SHORTCUT_DEFAULTS = {
+        "redo": _mod("Ctrl+Y"),
+    }
+
+    LAST_MOLECULE_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "molvector_last_molecule.txt"
+    )
 
     def __init__(self):
         super().__init__()
@@ -2797,6 +2956,7 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         self._load_appearance_config()
         self._apply_shortcut_config()
+        self._maybe_restore_molecule()
         self._show_placeholder()
         self.setAcceptDrops(True)
 
@@ -2863,6 +3023,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(act_style)
         self._shortcut_actions["style"] = act_style
 
+        act_shortcuts = QAction("&Shortcuts…", self)
+        act_shortcuts.triggered.connect(self._edit_shortcuts)
+        edit_menu.addAction(act_shortcuts)
+        self._shortcut_actions["shortcuts"] = act_shortcuts
+
         edit_menu.addSeparator()
 
         act_info = QAction("&Info…", self)
@@ -2874,10 +3039,12 @@ class MainWindow(QMainWindow):
         act_charge = QAction("Edit &Charge…", self)
         act_charge.triggered.connect(self._edit_charge)
         edit_menu.addAction(act_charge)
+        self._shortcut_actions["charge"] = act_charge
 
         act_inchi = QAction("&InChI…", self)
         act_inchi.triggered.connect(self._show_inchi)
         edit_menu.addAction(act_inchi)
+        self._shortcut_actions["inchi"] = act_inchi
 
         edit_menu.addSeparator()
 
@@ -2905,16 +3072,11 @@ class MainWindow(QMainWindow):
         self._act_align_toggle = act_align_toggle
         self._shortcut_actions["align_mode"] = act_align_toggle
 
-        act_shortcuts = QAction("&Shortcuts…", self)
-        act_shortcuts.triggered.connect(self._edit_shortcuts)
-        edit_menu.addAction(act_shortcuts)
-        self._shortcut_actions["shortcuts"] = act_shortcuts
-
         # ── View ──
         view_menu = mb.addMenu("&View")
         act_reset_view = QAction("&Reset View", self)
         act_reset_view.setShortcut("R")
-        act_reset_view.triggered.connect(lambda: self._canvas.reset_view())
+        act_reset_view.triggered.connect(self._reset_view)
         view_menu.addAction(act_reset_view)
         self._shortcut_actions["reset_view"] = act_reset_view
 
@@ -2927,40 +3089,47 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
 
         presets_menu = view_menu.addMenu("&Preset Orientation")
-        for label, (rx,ry,rz) in [
-            ("Top",         ( 5,  0,  0)),
-            ("Bottom",      (175, 0,  0)),
-            ("Front",       ( 0,  0,  0)),
-            ("Back",        ( 0,180,  0)),
-            ("Left",        ( 0,-90,  0)),
-            ("Right",       ( 0, 90,  0)),
-            ("Perspective", (55, 20, 15)),
-        ]:
+        preset_names = {
+            "preset_top":         ("Top",         ( 5,  0,  0)),
+            "preset_bottom":      ("Bottom",      (175, 0,  0)),
+            "preset_front":       ("Front",       ( 0,  0,  0)),
+            "preset_back":        ("Back",        ( 0,180,  0)),
+            "preset_left":        ("Left",        ( 0,-90,  0)),
+            "preset_right":       ("Right",       ( 0, 90,  0)),
+            "preset_perspective": ("Perspective", (55, 20, 15)),
+        }
+        for key, (label, rot) in preset_names.items():
             a = QAction(label, self)
-            a.triggered.connect(lambda _, r=(rx,ry,rz): self._canvas.set_preset(*r))
+            a.triggered.connect(lambda _, r=rot: self._canvas.set_preset(*r))
             presets_menu.addAction(a)
+            self._shortcut_actions[key] = a
 
         presets_menu.addSeparator()
         for idx, label in [(0, "BC plane"), (1, "AC plane"), (2, "AB plane")]:
             a = QAction(label, self)
             a.triggered.connect(lambda _, i=idx: self._canvas.set_principal_axis_preset(i))
             presets_menu.addAction(a)
+            key = ["preset_bc_plane", "preset_ac_plane", "preset_ab_plane"][idx]
+            self._shortcut_actions[key] = a
 
         view_menu.addSeparator()
-        act_bg = QAction("&Background Colour…", self)
-        act_bg.triggered.connect(self._canvas.edit_background_color)
-        view_menu.addAction(act_bg)
+        act_overlay = QAction("Overlay Settings", self)
+        act_overlay.triggered.connect(self._edit_overlay)
+        view_menu.addAction(act_overlay)
+        self._shortcut_actions["overlay_settings"] = act_overlay
 
         # ── Calculations ──
         self._menu_calc = mb.addMenu("&Calculations")
         act_g16 = QAction("Generate G16 Input…", self)
         act_g16.triggered.connect(self._generate_g16_input)
         self._menu_calc.addAction(act_g16)
+        self._shortcut_actions["g16_input"] = act_g16
         self._menu_calc.setEnabled(True)
 
         act_rotconstant = QAction("Calculate Rotational Constants", self)
         act_rotconstant.triggered.connect(self._calculate_rotational_constants)
         self._menu_calc.addAction(act_rotconstant)
+        self._shortcut_actions["rotational_constants"] = act_rotconstant
 
         # ── Build ──
         self._menu_build = mb.addMenu("&Build")
@@ -2981,10 +3150,12 @@ class MainWindow(QMainWindow):
         act_redo.setShortcuts([QKeySequence(_mod("Ctrl+Shift+Z")), QKeySequence(_mod("Ctrl+Y"))])
         act_redo.triggered.connect(self._redo)
         self._menu_build.addAction(act_redo)
+        self._shortcut_actions["redo"] = act_redo
 
         act_ff = QAction("Optimize Settings…", self)
         act_ff.triggered.connect(self._edit_ff_settings)
         self._menu_build.addAction(act_ff)
+        self._shortcut_actions["optimize_settings"] = act_ff
 
         self._menu_build.addSeparator()
 
@@ -2992,6 +3163,7 @@ class MainWindow(QMainWindow):
         self._act_bond_order.setCheckable(True)
         self._act_bond_order.triggered.connect(self._toggle_bond_order)
         self._menu_build.addAction(self._act_bond_order)
+        self._shortcut_actions["bond_order"] = self._act_bond_order
 
         # ── Help ──
         help_menu = mb.addMenu("&Help")
@@ -3006,12 +3178,14 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(
                 os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_files"))))
         help_menu.addAction(act_open_test_folder)
+        self._shortcut_actions["open_test_folder"] = act_open_test_folder
 
         help_menu.addSeparator()
 
         act_about = QAction("&About Molvector", self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
+        self._shortcut_actions["about"] = act_about
 
     def _setup_builder_toolbar(self):
         assets_dir = os.path.join(os.path.dirname(__file__), "assets", "icons")
@@ -3101,7 +3275,7 @@ class MainWindow(QMainWindow):
         tb_action("Save",        self._save_as,      _mod("Ctrl+S"), "Save molecule file")
         tb_action("Export view", self._export_view,  _mod("Ctrl+E"), "Export view as PDF/PNG/SVG")
         tb.addSeparator()
-        tb_action("Reset view",     lambda: self._canvas.reset_view())
+        tb_action("Reset view",     self._reset_view)
         tb_action("Clear All",      self._clear_molecule)
         tb.addSeparator()
 
@@ -3208,7 +3382,7 @@ class MainWindow(QMainWindow):
         svg = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="450" viewBox="0 0 600 450">' 
             f'<rect width="600" height="450" fill="{bg}"/>' 
-            f'<text x="300" y="210" text-anchor="middle" font-family="Courier New" font-size="15" fill="{fg}">' 
+            f'<text x="300" y="210" text-anchor="middle" font-family="monospace" font-size="15" fill="{fg}">' 
             'Open a molecule file to begin' 
             '</text>' 
             '</svg>'
@@ -3299,9 +3473,12 @@ class MainWindow(QMainWindow):
         if mol and (mol.vibrational_modes or mol.excited_states):
             self._menu_calc.addSeparator()
             act_results = QAction("Calculation Results…", self)
-            overrides = self._load_shortcut_overrides()
+            overrides, alt_overrides = self._load_shortcut_overrides()
             ks = overrides.get("calc_results", _mod("Ctrl+M"))
             act_results.setShortcut(ks)
+            alt_ks = alt_overrides.get("calc_results", "")
+            if alt_ks and ks:
+                act_results.setShortcuts([QKeySequence(ks), QKeySequence(alt_ks)])
             act_results.triggered.connect(self._show_calculations_dialog)
             self._menu_calc.addAction(act_results)
             self._shortcut_actions["calc_results"] = act_results
@@ -3692,34 +3869,51 @@ class MainWindow(QMainWindow):
         dlg.show()
 
     def _edit_shortcuts(self):
-        dlg = ShortcutDialog(self._shortcut_actions, self)
+        _, saved_alt = self._load_shortcut_overrides()
+        alt = dict(self.ALT_SHORTCUT_DEFAULTS)
+        alt.update(saved_alt)
+        alt = {k: v for k, v in alt.items() if k in self._shortcut_actions}
+        dlg = ShortcutDialog(self._shortcut_actions, alt_defaults=alt, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            overrides = dlg.get_shortcuts()
-            self._apply_shortcuts(overrides)
-            self._save_shortcut_overrides(overrides)
+            primary, alt = dlg.get_shortcuts()
+            self._apply_shortcuts(primary)
+            self._apply_alt_shortcuts(alt)
+            self._save_shortcut_overrides(primary, alt)
 
     def _apply_shortcut_config(self):
-        overrides = self._load_shortcut_overrides()
-        if overrides:
-            self._apply_shortcuts(overrides)
+        primary, alt = self._load_shortcut_overrides()
+        if primary:
+            self._apply_shortcuts(primary)
+        if alt:
+            self._apply_alt_shortcuts(alt)
 
     def _apply_shortcuts(self, overrides: dict):
         for aid, seq_str in overrides.items():
             if aid in self._shortcut_actions and seq_str:
                 self._shortcut_actions[aid].setShortcut(seq_str)
 
-    def _load_shortcut_overrides(self) -> dict:
+    def _apply_alt_shortcuts(self, alt: dict):
+        for aid, seq_str in alt.items():
+            if aid in self._shortcut_actions and seq_str:
+                action = self._shortcut_actions[aid]
+                primary = action.shortcut().toString()
+                if primary:
+                    action.setShortcuts([QKeySequence(primary), QKeySequence(seq_str)])
+                else:
+                    action.setShortcut(seq_str)
+
+    def _load_shortcut_overrides(self) -> tuple:
         cfg_path = os.path.join(os.path.dirname(__file__), "molvector_config.json")
         try:
             if os.path.exists(cfg_path):
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                return cfg.get("shortcuts", {})
+                return cfg.get("shortcuts", {}), cfg.get("alt_shortcuts", {})
         except Exception:
             pass
-        return {}
+        return {}, {}
 
-    def _save_shortcut_overrides(self, overrides: dict):
+    def _save_shortcut_overrides(self, primary: dict, alt: dict):
         cfg_path = os.path.join(os.path.dirname(__file__), "molvector_config.json")
         config = {}
         try:
@@ -3728,7 +3922,8 @@ class MainWindow(QMainWindow):
                     config = json.load(f)
         except Exception:
             pass
-        config["shortcuts"] = overrides
+        config["shortcuts"] = primary
+        config["alt_shortcuts"] = alt
         try:
             with open(cfg_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
@@ -4081,7 +4276,8 @@ class MainWindow(QMainWindow):
             theme = g.get("theme", "light")
             if theme != self._current_theme:
                 self._apply_theme(theme)
-            self._canvas.background = g.get("bg_color", self._canvas.background)
+            self._canvas.background = o.get("bg_color", g.get("bg_color", self._canvas.background))
+            self._restore_on_startup = g.get("restore_molecule", False)
         if a:
             self._canvas.atom_scale = a.get("atom_scale", self._canvas.atom_scale)
             self._canvas.bond_width_px = a.get("bond_width_px", self._canvas.bond_width_px)
@@ -4102,7 +4298,43 @@ class MainWindow(QMainWindow):
             self._canvas.principal_axes_position = o.get("principal_axes_position", self._canvas.principal_axes_position)
         self._canvas.request_render()
 
+    def _maybe_restore_molecule(self):
+        if not getattr(self, '_restore_on_startup', False):
+            return
+        path = self.LAST_MOLECULE_FILE
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path) as f:
+                content = f.read().strip()
+            try:
+                data = json.loads(content)
+                mol_path = data.get("path", "")
+                view = data
+            except (json.JSONDecodeError, ValueError):
+                mol_path = content
+                view = None
+            if mol_path and os.path.isfile(mol_path):
+                self._load_and_display(mol_path)
+                if view and self._canvas.molecule:
+                    c = self._canvas
+                    if "rot" in view:
+                        c._rot = np.array(view["rot"])
+                    if "zoom" in view:
+                        c._zoom = view["zoom"]
+                    if "pan" in view:
+                        c._pan = np.array(view["pan"])
+                    if "axes_ref" in view:
+                        c._axes_ref = np.array(view["axes_ref"])
+                    if "default_view" in view:
+                        c._default_view = np.array(view["default_view"])
+                    c.request_render()
+        except Exception:
+            pass
+
     def _edit_settings(self, tab_index=0):
+        cfg = SettingsDialog.load_config() or {}
+        restore = cfg.get("general", {}).get("restore_molecule", False)
         orig = (self._current_theme, self._canvas.background,
                 self._canvas.atom_scale, self._canvas.bond_width_px,
                 self._canvas.bond_style, dict(self._color_overrides),
@@ -4111,7 +4343,8 @@ class MainWindow(QMainWindow):
                 self._canvas.lighting_intensity, self._canvas.light_position,
                 self._canvas.roughness,
                 self._canvas.show_axes, self._canvas.show_principal_axes,
-                self._canvas.axes_position, self._canvas.principal_axes_position)
+                self._canvas.axes_position, self._canvas.principal_axes_position,
+                restore)
 
         def _live_update(theme, bg, ball, bw, style, colors, border_mode, border_scale,
                          border_width, bcol, lighting, pos, rough,
@@ -4146,6 +4379,7 @@ class MainWindow(QMainWindow):
             light_position=orig[11], roughness=orig[12],
             show_axes=orig[13], show_principal_axes=orig[14],
             axes_position=orig[15], principal_axes_position=orig[16],
+            restore_molecule=orig[17],
             live_callback=_live_update, parent=self,
         )
         dlg.tabs.setCurrentIndex(tab_index)
@@ -4183,7 +4417,8 @@ class MainWindow(QMainWindow):
              self._canvas.show_axes,
              self._canvas.show_principal_axes,
              self._canvas.axes_position,
-             self._canvas.principal_axes_position) = orig
+             self._canvas.principal_axes_position,
+             _) = orig
             self._canvas.color_overrides = self._color_overrides
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, self._color_overrides)
@@ -4191,6 +4426,27 @@ class MainWindow(QMainWindow):
 
     def _edit_style(self):
         self._edit_settings(tab_index=2)
+
+    def _edit_overlay(self):
+        self._edit_settings(tab_index=1)
+
+    def closeEvent(self, event):
+        if self._current_path and self._canvas.molecule:
+            try:
+                c = self._canvas
+                data = {
+                    "path": self._current_path,
+                    "rot": c._rot.tolist(),
+                    "zoom": c._zoom,
+                    "pan": c._pan.tolist(),
+                    "axes_ref": c._axes_ref.tolist(),
+                    "default_view": c._default_view.tolist(),
+                }
+                with open(self.LAST_MOLECULE_FILE, "w") as f:
+                    json.dump(data, f)
+            except Exception:
+                pass
+        super().closeEvent(event)
 
     def _edit_atom_colors(self):
         mol = self._canvas.molecule
@@ -4268,6 +4524,11 @@ class MainWindow(QMainWindow):
         self._zoom_lbl.setText(f"{value}%")
         self._canvas.request_render(delay_ms=60)
 
+    def _reset_view(self):
+        self._canvas.reset_view()
+        self._zoom_slider.setValue(100)
+        self._zoom_lbl.setText("100%")
+
     def _on_rotation_changed(self):
         pct = int(self._canvas._zoom * 100)
         self._zoom_lbl.setText(f"{pct}%")
@@ -4282,7 +4543,7 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Molvector")
-    app.setFont(QFont("Segoe UI", 10))
+    app.setFont(QFont("sans-serif", 10))
 
     if platform.system() == "Windows":
         try:
