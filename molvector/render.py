@@ -165,6 +165,15 @@ class Molecule:
     charge: int = 0
     excited_states: List[ExcitedState] = field(default_factory=list)
     vibrational_modes: List[VibrationalMode] = field(default_factory=list)
+    g16_nproc: Optional[int] = None
+    g16_mem: Optional[str] = None
+    g16_route: Optional[str] = None
+    g16_chk: Optional[str] = None
+    g16_dipole: Optional[Tuple[float, float, float, float]] = None
+    g16_rotconst: Optional[Tuple[float, float, float]] = None
+    g16_scf_energy: Optional[float] = None
+    g16_opt_energy: Optional[float] = None
+    g16_point_group: Optional[str] = None
 
 
 
@@ -366,6 +375,20 @@ def parse_gaussian(text: str) -> Molecule:
 
     name = sections[1][0] if len(sections) > 1 else "molecule"
     mol = Molecule(name=name)
+
+    # Extract header info from route section
+    if sections:
+        for line in sections[0]:
+            low = line.strip().lower()
+            if low.startswith("%nprocshared=") or low.startswith("%nproc="):
+                try:
+                    mol.g16_nproc = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif low.startswith("%mem="):
+                mol.g16_mem = line.split("=", 1)[1].strip()
+            elif line.strip().startswith("#"):
+                mol.g16_route = line.strip()
 
     if len(sections) >= 3:
         # First line of section 3 is "charge multiplicity"
@@ -593,15 +616,50 @@ def parse_gaussian_log(text: str) -> Molecule:
     """
     lines = text.splitlines()
 
-    # Extract job title from lines following the route card
+    # Extract header info (nproc, mem, chk, route)
+    nproc = None
+    mem = None
+    chk = None
+    route_str = None
     name = "Gaussian output"
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("#"):
+        if stripped.startswith("%nprocshared="):
+            try:
+                nproc = int(stripped.split("=", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("%nproc="):
+            try:
+                nproc = int(stripped.split("=", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("%mem="):
+            mem = stripped.split("=", 1)[1]
+        elif stripped.startswith("%chk="):
+            chk = stripped.split("=", 1)[1]
+        elif stripped.startswith("#"):
+            route_parts = [stripped.lstrip("#").strip()]
+            for j in range(i + 1, min(i + 30, len(lines))):
+                s = lines[j].strip()
+                if not s or s.startswith("-") or s.startswith("*"):
+                    break
+                if s.startswith("#"):
+                    route_parts.append(s.lstrip("#").strip())
+                elif s.startswith("%"):
+                    break
+                else:
+                    if s and route_parts[-1] and (s[0].isupper() or s[0] in "(+-*"):
+                        route_parts[-1] = route_parts[-1] + s
+                    else:
+                        route_parts[-1] = route_parts[-1] + " " + s
+            route_str = "# " + " ".join(route_parts)
+            # Extract job title after route card
             for j in range(i + 1, min(i + 30, len(lines))):
                 s = lines[j].strip()
                 if s and not s.startswith("-") and not s.startswith("#") \
-                        and not s.startswith("%") and len(s) > 2:
+                        and not s.startswith("%") and not s.startswith("*") \
+                        and len(s) > 2:
                     name = s
                     break
             break
@@ -768,9 +826,74 @@ def parse_gaussian_log(text: str) -> Molecule:
         except Exception:
             pass
 
+    # ── Extract last-iteration results ──────────────────────────────────
+    dipole_moment = None  # (X, Y, Z, Total) in Debye
+    rot_constants = None  # (A, B, C) in MHz
+    scf_energy = None     # in Hartree
+    opt_energy = None     # from optimization ! line, in Hartree
+    point_group = None
+    for line in reversed(lines):
+        stripped = line.strip()
+        if dipole_moment is None and "Dipole moment (field-independent basis, Debye):" in line:
+            continue
+        if dipole_moment is None and "Dipole moment (Debye):" in line:
+            continue
+        if dipole_moment is None and "X=" in stripped and "Y=" in stripped and "Z=" in stripped and "Tot=" in stripped:
+            try:
+                parts = stripped.replace("=", " ").split()
+                x = float(parts[parts.index("X") + 1])
+                y = float(parts[parts.index("Y") + 1])
+                z = float(parts[parts.index("Z") + 1])
+                t = float(parts[parts.index("Tot") + 1])
+                dipole_moment = (x, y, z, t)
+            except (ValueError, IndexError):
+                pass
+        if rot_constants is None and "Rotational constants (MHz):" in stripped:
+            try:
+                vals = stripped.split(":")[1].strip().split()
+                a, b, c = float(vals[0]), float(vals[1]), float(vals[2])
+                rot_constants = (a, b, c)
+            except (ValueError, IndexError):
+                pass
+        if scf_energy is None and stripped.startswith("SCF Done:"):
+            try:
+                e_part = stripped.split("=")[1].strip().split()[0]
+                scf_energy = float(e_part)
+            except (ValueError, IndexError):
+                pass
+        if opt_energy is None and stripped.startswith("!") and "E=" in stripped:
+            try:
+                after_E = stripped.split("E=")[1].strip().split()[0]
+                opt_energy = float(after_E)
+            except (ValueError, IndexError):
+                pass
+        if dipole_moment is not None and rot_constants is not None and scf_energy is not None and opt_energy is not None:
+            break
+
+    # Scan forward for point group (single occurrence, typically near start)
+    for line in lines:
+        if "Full point group" in line:
+            try:
+                pg = line.split("Full point group")[1].strip().split()[0]
+                point_group = pg
+            except (IndexError, ValueError):
+                pass
+            break
+
     mol = Molecule(name=name, atoms=atoms, charge=charge, 
                    excited_states=excited_states, 
                    vibrational_modes=vibrational_modes)
+    mol.g16_nproc = nproc
+    mol.g16_mem = mem
+    mol.g16_dipole = dipole_moment
+    mol.g16_rotconst = rot_constants
+    mol.g16_scf_energy = scf_energy
+    mol.g16_opt_energy = opt_energy
+    mol.g16_point_group = point_group
+    if chk:
+        mol.g16_chk = chk
+    if route_str:
+        mol.g16_route = route_str
     mol.name = chemical_formula(mol)
     return mol
 

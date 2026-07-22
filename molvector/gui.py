@@ -1117,6 +1117,43 @@ class CalculationsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
+        # ── General Tab (first position) ──
+        gen_page = QWidget()
+        gpl = QVBoxLayout(gen_page)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        def sel_label(text):
+            lbl = QLabel(text)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            return lbl
+
+        if mol.g16_point_group is not None:
+            form.addRow("Point Group:", sel_label(mol.g16_point_group))
+        if mol.g16_opt_energy is not None:
+            form.addRow("Energy:", sel_label(f"{mol.g16_opt_energy:.8f} Ha"))
+        elif mol.g16_scf_energy is not None:
+            form.addRow("Energy:", sel_label(f"{mol.g16_scf_energy:.8f} Ha"))
+        if mol.g16_rotconst is not None:
+            a, b, c = mol.g16_rotconst
+            rc = sel_label(f"A = {a:.4f} MHz\nB = {b:.4f} MHz\nC = {c:.4f} MHz")
+            form.addRow("Rotational Constants:", rc)
+        if mol.g16_dipole is not None:
+            x, y, z, t = mol.g16_dipole
+            dm = sel_label(f"X = {x:.4f} D\nY = {y:.4f} D\nZ = {z:.4f} D\nTotal = {t:.4f} D")
+            form.addRow("Dipole Moment:", dm)
+        if mol.g16_nproc is not None:
+            form.addRow("Processors:", sel_label(str(mol.g16_nproc)))
+        if mol.g16_mem is not None:
+            form.addRow("Memory:", sel_label(mol.g16_mem))
+        if mol.g16_chk is not None:
+            form.addRow("Checkpoint:", sel_label(mol.g16_chk))
+
+        if form.rowCount() > 0:
+            gpl.addLayout(form)
+            gpl.addStretch()
+            self.tabs.addTab(gen_page, "General")
+
         # ── Frequencies Tab ──
         if mol.vibrational_modes:
             freq_page = QWidget()
@@ -1251,6 +1288,7 @@ class G16InputDialog(QDialog):
         self.mol = mol
         self._generating = False
         self._last_generated = ""
+        self._loaded_route = None
         self._all_fields = []
 
         layout = QVBoxLayout(self)
@@ -1333,13 +1371,19 @@ class G16InputDialog(QDialog):
 
         mem_row = QHBoxLayout()
         self._mem_combo = QComboBox()
-        self._mem_combo.addItems(["2GB", "4GB", "8GB", "16GB", "32GB", "64GB"])
+        self._mem_combo.addItems(["2", "4", "8", "16", "32", "64"])
+        self._mem_combo.setEditable(True)
         self._mem_combo.setMinimumWidth(80)
-        self._mem_combo.setCurrentText("8GB")
+        self._mem_combo.setCurrentText("8")
         self._mem_combo.currentTextChanged.connect(self._on_field_changed)
         mem_row.addWidget(self._mem_combo)
         mem_row.addStretch()
         form.addRow("Memory:", mem_row)
+
+        self._custom_pct = QLineEdit()
+        self._custom_pct.setPlaceholderText("e.g. %chk=file.chk")
+        self._custom_pct.textChanged.connect(self._on_field_changed)
+        form.addRow("Custom % line:", self._custom_pct)
 
         layout.addLayout(form)
 
@@ -1356,6 +1400,9 @@ class G16InputDialog(QDialog):
         btn_save = QPushButton("Save…")
         btn_save.clicked.connect(self._save)
         btn_layout.addWidget(btn_save)
+        btn_copy_matrix = QPushButton("Copy matrix")
+        btn_copy_matrix.clicked.connect(self._copy_matrix)
+        btn_layout.addWidget(btn_copy_matrix)
         self._btn_sync = QPushButton("Sync from fields")
         self._btn_sync.clicked.connect(self._sync_from_fields)
         btn_layout.addWidget(self._btn_sync)
@@ -1369,8 +1416,23 @@ class G16InputDialog(QDialog):
         self._all_fields = [
             self._job_combo, self._method_combo, self._basis_combo,
             self._charge_spin, self._mult_spin, self._nproc_spin,
-            self._mem_combo,
+            self._mem_combo, self._custom_pct,
         ]
+
+        # Pre-populate fields from loaded molecule header
+        if mol.g16_nproc is not None:
+            self._nproc_spin.blockSignals(True)
+            self._nproc_spin.setValue(mol.g16_nproc)
+            self._nproc_spin.blockSignals(False)
+        if mol.g16_mem is not None:
+            self._mem_combo.blockSignals(True)
+            self._mem_combo.setCurrentText(mol.g16_mem.rstrip("GB"))
+            self._mem_combo.blockSignals(False)
+        if mol.g16_chk is not None:
+            self._custom_pct.setText(f"%chk={mol.g16_chk}")
+        if mol.g16_route is not None:
+            self._loaded_route = mol.g16_route
+            self._parse_route_into_fields(mol.g16_route)
 
         self._sync_from_fields()
 
@@ -1387,6 +1449,7 @@ class G16InputDialog(QDialog):
         self._set_fields_enabled(False)
 
     def _on_field_changed(self):
+        self._loaded_route = None
         self._sync_from_fields()
 
     def _field_val(self, combo, custom) -> str:
@@ -1394,6 +1457,50 @@ class G16InputDialog(QDialog):
             txt = custom.text().strip()
             return txt if txt else "CUSTOM"
         return combo.currentText()
+
+    def _set_combo_field(self, combo, custom, value):
+        if not value:
+            return
+        items = [combo.itemText(i).lower() for i in range(combo.count())]
+        if value.lower() in items:
+            idx = items.index(value.lower())
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+            custom.setVisible(False)
+        else:
+            combo.blockSignals(True)
+            combo.setCurrentText("Custom")
+            combo.blockSignals(False)
+            custom.blockSignals(True)
+            custom.setText(value)
+            custom.setVisible(True)
+            custom.blockSignals(False)
+
+    def _parse_route_into_fields(self, route: str):
+        text = route.lstrip("#").strip()
+        tokens = text.split()
+        if not tokens:
+            return
+        slash_idx = -1
+        for i, tok in enumerate(tokens):
+            if "/" in tok:
+                slash_idx = i
+        if slash_idx >= 0:
+            method_basis = tokens[slash_idx]
+            parts = method_basis.split("/", 1)
+            method_val = parts[0]
+            basis_val = parts[1] if len(parts) > 1 else ""
+            if slash_idx + 1 < len(tokens):
+                basis_val = basis_val + " " + " ".join(tokens[slash_idx + 1:])
+            job_val = " ".join(tokens[:slash_idx])
+        else:
+            job_val = text
+            method_val = ""
+            basis_val = ""
+        self._set_combo_field(self._job_combo, self._job_custom, job_val)
+        self._set_combo_field(self._method_combo, self._method_custom, method_val)
+        self._set_combo_field(self._basis_combo, self._basis_custom, basis_val)
 
     def _build_route(self) -> str:
         job = self._field_val(self._job_combo, self._job_custom)
@@ -1403,15 +1510,19 @@ class G16InputDialog(QDialog):
 
     def _build_text(self) -> str:
         nproc = self._nproc_spin.value()
-        mem = self._mem_combo.currentText()
-        route = self._build_route()
+        mem = self._mem_combo.currentText().rstrip("GB") + "GB"
+        route = self._loaded_route if self._loaded_route else self._build_route()
         charge = self._charge_spin.value()
         mult = self._mult_spin.value()
+        custom_pct = self._custom_pct.text().strip()
+
+        header = [f"%nprocshared={nproc}", f"%mem={mem}"]
+        if custom_pct:
+            header.append(custom_pct)
+        header.append(route)
 
         lines = [
-            f"%nprocshared={nproc}",
-            f"%mem={mem}",
-            route,
+            *header,
             "",
             self.mol.name,
             "",
@@ -1419,7 +1530,7 @@ class G16InputDialog(QDialog):
         ]
         for a in self.mol.atoms:
             lines.append(f"{a.element:3s} {a.x:12.6f} {a.y:12.6f} {a.z:12.6f}")
-        lines.append("")
+        lines.extend(["", "", ""])
         return "\n".join(lines)
 
     def _sync_from_fields(self):
@@ -1429,6 +1540,12 @@ class G16InputDialog(QDialog):
         self._generating = False
         self._set_fields_enabled(True)
         self._btn_sync.setEnabled(False)
+
+    def _copy_matrix(self):
+        lines = []
+        for a in self.mol.atoms:
+            lines.append(f"{a.element:3s} {a.x:12.6f} {a.y:12.6f} {a.z:12.6f}")
+        QApplication.clipboard().setText("\n".join(lines))
 
     def _save(self):
         safe = self.mol.name.replace(" ", "_").replace("/", "_") or "input"
@@ -1440,7 +1557,7 @@ class G16InputDialog(QDialog):
             return
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(self._build_text())
+                f.write(self._preview.toPlainText())
             QMessageBox.information(self, "Saved", f"Gaussian input saved to:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not save: {e}")
@@ -3129,6 +3246,7 @@ class MainWindow(QMainWindow):
         self._shortcut_actions["g16_input"] = act_g16
         self._menu_calc.setEnabled(True)
 
+        self._menu_calc.addSeparator()
         act_rotconstant = QAction("Calculate Rotational Constants", self)
         act_rotconstant.triggered.connect(self._calculate_rotational_constants)
         self._menu_calc.addAction(act_rotconstant)
@@ -3341,9 +3459,10 @@ class MainWindow(QMainWindow):
         # Calculations info
         self._calc_group = QGroupBox("Calculations")
         cl = QVBoxLayout(self._calc_group)
+        self._lbl_energy = QLabel("Energy: —")
         self._lbl_vib = QLabel("Vibrations: —")
         self._lbl_td  = QLabel("States: —")
-        for w in (self._lbl_vib, self._lbl_td):
+        for w in (self._lbl_energy, self._lbl_vib, self._lbl_td):
             cl.addWidget(w)
         self._btn_view_calc = QPushButton("View Results…")
         self._btn_view_calc.clicked.connect(self._show_calculations_dialog)
@@ -3474,8 +3593,8 @@ class MainWindow(QMainWindow):
                                  f"{type(e).__name__}: {e}")
 
     def _update_calculations_menu(self, mol: Molecule):
-        # Remove any actions beyond the first three (G16 Input, Rotational Constants, Dipole Moment)
-        while len(self._menu_calc.actions()) > 3:
+        # Keep G16 Input, separator, Rotational Constants, Dipole Moment
+        while len(self._menu_calc.actions()) > 4:
             self._menu_calc.removeAction(self._menu_calc.actions()[-1])
 
         if mol and (mol.vibrational_modes or mol.excited_states):
@@ -3720,9 +3839,16 @@ class MainWindow(QMainWindow):
         # Update Calculations Group
         has_vib = bool(mol.vibrational_modes)
         has_td  = bool(mol.excited_states)
-        has_any = has_vib or has_td
+        has_energy = mol.g16_scf_energy is not None or mol.g16_opt_energy is not None
+        has_any = has_vib or has_td or has_energy
         if has_any:
             self._calc_group.show()
+            if has_energy:
+                eng = mol.g16_opt_energy if mol.g16_opt_energy is not None else mol.g16_scf_energy
+                self._lbl_energy.setText(f"Energy: {eng:.4f} Ha")
+                self._lbl_energy.setVisible(True)
+            else:
+                self._lbl_energy.setVisible(False)
             self._lbl_vib.setVisible(has_vib)
             self._lbl_td.setVisible(has_td)
             self._lbl_vib.setText(f"Vibrations: {len(mol.vibrational_modes)} modes")
