@@ -126,6 +126,7 @@ class Atom:
     x: float
     y: float
     z: float
+    color: Optional[str] = None
 
     @property
     def pos(self) -> np.ndarray:
@@ -183,8 +184,8 @@ class Molecule:
 
 # Standard atomic weights (g/mol), most common isotope / IUPAC 2021
 ATOMIC_MASSES: Dict[str, float] = {
-    "H":1.008,  "He":4.003, "Li":6.941, "Be":9.012, "B":10.811,
-    "C":12.011, "N":14.007, "O":15.999, "F":18.998, "Ne":20.180,
+    "H":1.008,  "D":2.014,  "T":3.016,  "He":4.003, "Li":6.941, "Be":9.012, "B":10.811,
+    "C":12.011, "13C":13.003, "14C":14.003, "N":14.007, "15N":15.000, "O":15.999, "F":18.998, "Ne":20.180,
     "Na":22.990,"Mg":24.305,"Al":26.982,"Si":28.086,"P":30.974,
     "S":32.065, "Cl":35.453,"Ar":39.948,"K":39.098, "Ca":40.078,
     "Fe":55.845,"Ni":58.693,"Cu":63.546,"Zn":65.38, "Br":79.904,
@@ -988,7 +989,7 @@ def _parse_select_modes(text: str, atoms: list, vibrational_modes: list):
 # ─────────────────────────────────────────────────────────────────────────────
 
 COVALENT_RADII: Dict[str, float] = {
-    "H":0.31,"C":0.76,"N":0.71,"O":0.66,"F":0.57,
+    "H":0.31,"D":0.31,"T":0.31,"C":0.76,"13C":0.76,"14C":0.76,"N":0.71,"15N":0.71,"O":0.66,"F":0.57,
     "S":1.05,"P":1.07,"Cl":1.02,"Br":1.20,"I":1.39,
     "B":0.82,"Si":1.11,
 }
@@ -1027,13 +1028,13 @@ def infer_bonds(mol: Molecule, tol: float = 0.40) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 CPK_BASE: Dict[str, str] = {
-    "H":"#d4d4d4","C":"#444444","N":"#2050d0","O":"#cc1111",
+    "H":"#d4d4d4","D":"#d4d4d4","T":"#d4d4d4","C":"#444444","13C":"#444444","14C":"#444444","N":"#2050d0","15N":"#2050d0","O":"#cc1111",
     "F":"#66cc22","S":"#ddcc00","P":"#ff8800","Cl":"#11bb22",
     "Br":"#882200","I":"#660099","B":"#ffaa33","Si":"#8888aa",
 }
 
 CPK_DARK: Dict[str, str] = {
-    "H":"#888888","C":"#111111","N":"#0a1a60","O":"#550000",
+    "H":"#888888","D":"#888888","T":"#888888","C":"#111111","13C":"#111111","14C":"#111111","N":"#0a1a60","15N":"#0a1a60","O":"#550000",
     "F":"#224400","S":"#554400","P":"#441100","Cl":"#003300",
     "Br":"#330000","I":"#220033","B":"#664400","Si":"#333344",
 }
@@ -1042,7 +1043,7 @@ DEFAULT_BASE = "#cc44aa"
 DEFAULT_DARK = "#440022"
 
 VDW_RADII: Dict[str, float] = {
-    "H":0.53,"C":0.77,"N":0.75,"O":0.73,"F":0.71,
+    "H":0.53,"D":0.53,"T":0.53,"C":0.77,"13C":0.77,"14C":0.77,"N":0.75,"15N":0.75,"O":0.73,"F":0.71,
     "S":1.02,"P":1.06,"Cl":0.99,"Br":1.14,"I":1.33,
     "B":0.87,"Si":1.10,
 }
@@ -1422,7 +1423,7 @@ def generate_inchi(mol: Molecule) -> Optional[str]:
 
 
 _EXPECTED_VALENCE: Dict[str, int] = {
-    "H": 1, "He": 2, "Li": 1, "Be": 2, "B": 3, "C": 4, "N": 4, "O": 2,
+    "H": 1, "D": 1, "T": 1, "He": 2, "Li": 1, "Be": 2, "B": 3, "C": 4, "13C": 4, "14C": 4, "N": 4, "15N": 4, "O": 2,
     "F": 1, "Ne": 8, "Na": 1, "Mg": 2, "Al": 3, "Si": 4, "P": 5, "S": 6,
     "Cl": 1, "Ar": 8, "K": 1, "Ca": 2, "Fe": 3, "Ni": 2, "Cu": 2,
     "Zn": 2, "Br": 1, "I": 1, "Au": 3, "Hg": 2,
@@ -1732,6 +1733,15 @@ def render_molecule(
             base_colors[elem] = col
             dark_colors[elem]  = auto_dark(col)
 
+    # Per-atom custom colors (overrides element & color_overrides)
+    _atom_custom_keys: Dict[int, str] = {}
+    for idx, atom in enumerate(mol.atoms):
+        if atom.color:
+            key = f"_cust{idx}"
+            _atom_custom_keys[idx] = key
+            base_colors[key] = atom.color
+            dark_colors[key] = auto_dark(atom.color)
+
     centered = center_positions(mol.atoms)
     cx = canvas_w/2 + pan_x
     cy = canvas_h/2 + pan_y
@@ -1788,8 +1798,9 @@ def render_molecule(
         registered.add(gid)
         return gid
 
-    for atom in mol.atoms:
-        ensure_grad(atom.element)
+    for idx, atom in enumerate(mol.atoms):
+        key = _atom_custom_keys.get(idx, atom.element)
+        ensure_grad(key)
 
     # SVD to find best-fit molecule plane normal
     if len(centered) >= 3:
@@ -1891,10 +1902,12 @@ def render_molecule(
                 b_id = f"b_{bi}_{o_idx}_{prefix}"
                 draw_list.append((z_sort, 0, ("bond_half", pts, px, py, indiv_hw_px, b_id, base, dark)))
             elif bond_style in ("match", "splitted"):
-                base_A = base_colors.get(mol.atoms[ai].element, DEFAULT_BASE)
-                base_B = base_colors.get(mol.atoms[aj].element, DEFAULT_BASE)
-                dark_A = dark_colors.get(mol.atoms[ai].element, DEFAULT_DARK)
-                dark_B = dark_colors.get(mol.atoms[aj].element, DEFAULT_DARK)
+                keyA = _atom_custom_keys.get(ai, mol.atoms[ai].element)
+                keyB = _atom_custom_keys.get(aj, mol.atoms[aj].element)
+                base_A = base_colors.get(keyA, DEFAULT_BASE)
+                base_B = base_colors.get(keyB, DEFAULT_BASE)
+                dark_A = dark_colors.get(keyA, DEFAULT_DARK)
+                dark_B = dark_colors.get(keyB, DEFAULT_DARK)
                 z_sort = (orig_az + orig_bz) / 2.0
                 overlap = 0.04
                 # A-side half (extends slightly past midpoint)
@@ -1932,8 +1945,10 @@ def render_molecule(
                     if not math.isfinite(hw): hw = 1.0
                     draw_list.append((z_sort, 0, ("bond_half", ((sBx,sBy),(eBx,eBy)), ppx, ppy, hw, f"b_{bi}_{o_idx}_B_{prefix}", base_B, dark_B)))
             else:
-                base_A = base_colors.get(mol.atoms[ai].element, DEFAULT_BASE)
-                base_B = base_colors.get(mol.atoms[aj].element, DEFAULT_BASE)
+                keyA = _atom_custom_keys.get(ai, mol.atoms[ai].element)
+                keyB = _atom_custom_keys.get(aj, mol.atoms[aj].element)
+                base_A = base_colors.get(keyA, DEFAULT_BASE)
+                base_B = base_colors.get(keyB, DEFAULT_BASE)
                 dark_A = dark_colors.get(mol.atoms[ai].element, DEFAULT_DARK)
                 dark_B = dark_colors.get(mol.atoms[aj].element, DEFAULT_DARK)
                 z_sort = (orig_az + orig_bz) / 2.0
@@ -1943,9 +1958,10 @@ def render_molecule(
 
     for idx,atom in enumerate(mol.atoms):
         ax,ay,az,ar = proj[idx]
-        gid  = ensure_grad(atom.element)
-        base = base_colors.get(atom.element, DEFAULT_BASE)
-        dark = dark_colors.get(atom.element, DEFAULT_DARK)
+        key = _atom_custom_keys.get(idx, atom.element)
+        gid  = ensure_grad(key)
+        base = base_colors.get(key, DEFAULT_BASE)
+        dark = dark_colors.get(key, DEFAULT_DARK)
         is_sel = selected_indices and idx in selected_indices
         draw_list.append((az, 1, ("atom",ax,ay,ar,gid,base,dark,atom.element,is_sel)))
 

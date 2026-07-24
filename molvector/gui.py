@@ -134,8 +134,8 @@ def get_safe_filename(name: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 ELEM_FULL_NAME = {
-    "H":"Hydrogen", "He":"Helium",  "Li":"Lithium", "Be":"Beryllium","B":"Boron",
-    "C":"Carbon",   "N":"Nitrogen", "O":"Oxygen",   "F":"Fluorine",  "Ne":"Neon",
+    "H":"Hydrogen", "D":"Deuterium (2H)", "T":"Tritium (3H)", "He":"Helium",  "Li":"Lithium", "Be":"Beryllium","B":"Boron",
+    "C":"Carbon",   "13C":"Carbon-13", "14C":"Carbon-14", "N":"Nitrogen", "15N":"Nitrogen-15", "O":"Oxygen",   "F":"Fluorine",  "Ne":"Neon",
     "Na":"Sodium",  "Mg":"Magnesium","Al":"Aluminium","Si":"Silicon", "P":"Phosphorus",
     "S":"Sulfur",   "Cl":"Chlorine", "Ar":"Argon",   "K":"Potassium", "Ca":"Calcium",
     "Sc":"Scandium","Ti":"Titanium", "V":"Vanadium", "Cr":"Chromium", "Mn":"Manganese",
@@ -1569,6 +1569,7 @@ class G16InputDialog(QDialog):
 
 class LegendPanel(QGroupBox):
     elementColorChanged = pyqtSignal(str, str)  # (element_symbol, hex_color)
+    atomColorChanged = pyqtSignal(int, str)     # (atom_index, hex_color)
 
     def __init__(self, parent=None):
         super().__init__("Elements", parent)
@@ -1577,43 +1578,66 @@ class LegendPanel(QGroupBox):
         self._layout.setContentsMargins(10,14,10,10)
 
         self._rows: list = []
+        self._custom_atom_map: Dict[str, int] = {}
 
     def update_for(self, mol: Molecule, overrides: dict):
         for w in self._rows:
             w.setParent(None)
         self._rows.clear()
+        self._custom_atom_map.clear()
 
-        seen = set()
+        # Standard entries — one per element for atoms without custom colors
+        seen_elem: set = set()
         for atom in mol.atoms:
-            e = atom.element
-            if e in seen:
+            if atom.color:
                 continue
-            seen.add(e)
+            e = atom.element
+            if e in seen_elem:
+                continue
+            seen_elem.add(e)
             color = overrides.get(e, CPK_BASE.get(e, "#cc44aa"))
             name  = ELEM_FULL_NAME.get(e, e)
+            self._add_row(e, color, f"{e} - {name}", clickable=True)
 
-            row = QWidget()
-            rl  = QHBoxLayout(row)
-            rl.setContentsMargins(0,0,0,0)
-            rl.setSpacing(7)
+        # Custom entries — atoms with per-atom color override
+        custom_counts: Dict[str, int] = {}
+        for idx, atom in enumerate(mol.atoms):
+            if not atom.color:
+                continue
+            e = atom.element
+            custom_counts[e] = custom_counts.get(e, 0) + 1
+            n = custom_counts[e]
+            label = f"{e} - Custom {n}"
+            self._custom_atom_map[label] = idx
+            self._add_row(label, atom.color, label, clickable=True, custom=True)
 
-            swatch = QPushButton()
-            swatch.setFixedSize(14, 14)
+    def _add_row(self, key: str, color: str, label: str, clickable: bool = True, custom: bool = False):
+        row = QWidget()
+        rl  = QHBoxLayout(row)
+        rl.setContentsMargins(0,0,0,0)
+        rl.setSpacing(7)
+
+        swatch = QPushButton()
+        swatch.setFixedSize(14, 14)
+        swatch.setStyleSheet(
+            f"background:{color}; border-radius:7px; border:1px solid #555;"
+        )
+        if clickable:
             swatch.setCursor(Qt.CursorShape.PointingHandCursor)
-            swatch.setToolTip(f"Click to change {name} colour")
-            swatch.setStyleSheet(
-                f"background:{color}; border-radius:7px; border:1px solid #555;"
-            )
-            swatch.clicked.connect(lambda _, e=e, c=color: self._pick_color(e, c))
+            swatch.setToolTip(f"Click to change {label} colour")
+            if custom:
+                swatch.clicked.connect(lambda _, lbl=label, c=color: self._pick_atom_color(lbl, c))
+            else:
+                swatch.clicked.connect(lambda _, e=key, c=color: self._pick_color(e, c))
 
-            lbl = QLabel(f"{e} - {name}")
-            lbl.setObjectName("dim")
-            rl.addWidget(swatch)
-            rl.addWidget(lbl)
-            rl.addStretch()
+        lbl = QLabel(label)
+        lbl.setObjectName("dim")
+        rl.addWidget(swatch)
+        rl.addWidget(lbl)
+        rl.addStretch()
 
-            self._layout.addWidget(row)
-            self._rows.append(row)
+        self._layout.addWidget(row)
+        self._rows.append(row)
 
     def _pick_color(self, elem: str, current_hex: str):
         dlg = QColorDialog(QColor(current_hex), self)
@@ -1624,6 +1648,16 @@ class LegendPanel(QGroupBox):
 
         self._layout.addStretch()
 
+    def _pick_atom_color(self, label: str, current_hex: str):
+        idx = self._custom_atom_map.get(label)
+        if idx is None:
+            return
+        dlg = QColorDialog(QColor(current_hex), self)
+        dlg.setWindowTitle(f"Pick Colour for {label}")
+        if dlg.exec():
+            new_hex = dlg.selectedColor().name()
+            self.atomColorChanged.emit(idx, new_hex)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERIODIC TABLE DIALOG
@@ -1631,7 +1665,7 @@ class LegendPanel(QGroupBox):
 
 _PERIODIC_TABLE_LAYOUT = [
     # (symbol, Z, row, col)
-    ("H",1,0,0), ("He",2,0,17),
+    ("H",1,0,0), ("D",0,0,4), ("T",-1,0,5), ("13C",600,0,6), ("14C",601,0,7), ("15N",700,0,8), ("He",2,0,17),
     ("Li",3,1,0), ("Be",4,1,1), ("B",5,1,12), ("C",6,1,13), ("N",7,1,14), ("O",8,1,15), ("F",9,1,16), ("Ne",10,1,17),
     ("Na",11,2,0), ("Mg",12,2,1), ("Al",13,2,12), ("Si",14,2,13), ("P",15,2,14), ("S",16,2,15), ("Cl",17,2,16), ("Ar",18,2,17),
     ("K",19,3,0), ("Ca",20,3,1), ("Sc",21,3,2), ("Ti",22,3,3), ("V",23,3,4), ("Cr",24,3,5), ("Mn",25,3,6), ("Fe",26,3,7), ("Co",27,3,8), ("Ni",28,3,9), ("Cu",29,3,10), ("Zn",30,3,11), ("Ga",31,3,12), ("Ge",32,3,13), ("As",33,3,14), ("Se",34,3,15), ("Br",35,3,16), ("Kr",36,3,17),
@@ -1659,6 +1693,7 @@ _ELEM_CATEGORY_COLORS = {
 }
 
 def _element_category(sym: str, Z: int) -> str:
+    if sym in ("D", "T", "13C", "14C", "15N"): return "nonmetal"
     if Z == 1: return "nonmetal"
     if Z == 2: return "noble_gas"
     if 3 <= Z <= 4: return "alkali_metal" if Z == 3 else "alkaline_earth"
@@ -3291,6 +3326,16 @@ class MainWindow(QMainWindow):
         self._menu_build.addAction(self._act_bond_order)
         self._shortcut_actions["bond_order"] = self._act_bond_order
 
+        act_paint = QAction("Paint Selected Atoms…", self)
+        act_paint.triggered.connect(self._paint_selected_atoms)
+        self._menu_build.addAction(act_paint)
+        self._shortcut_actions["paint_atoms"] = act_paint
+
+        act_clear_paint = QAction("Clear Paint", self)
+        act_clear_paint.triggered.connect(self._clear_paint)
+        self._menu_build.addAction(act_clear_paint)
+        self._shortcut_actions["clear_paint"] = act_clear_paint
+
         # ── Help ──
         help_menu = mb.addMenu("&Help")
         act_open_test = QAction("Open Test Molecule", self)
@@ -3473,6 +3518,7 @@ class MainWindow(QMainWindow):
         # Legend
         self._legend = LegendPanel()
         self._legend.elementColorChanged.connect(self._on_legend_color_changed)
+        self._legend.atomColorChanged.connect(self._on_atom_color_changed)
         sl.addWidget(self._legend)
         sl.addStretch()
 
@@ -3780,6 +3826,15 @@ class MainWindow(QMainWindow):
         self._canvas.request_render()
         if self._canvas.molecule:
             self._legend.update_for(self._canvas.molecule, self._color_overrides)
+
+    def _on_atom_color_changed(self, atom_idx: int, hex_color: str):
+        mol = self._canvas.molecule
+        if mol is None or atom_idx < 0 or atom_idx >= len(mol.atoms):
+            return
+        mol.atoms[atom_idx].color = hex_color
+        self._canvas.request_render()
+        self._legend.update_for(mol, self._color_overrides)
+        self._status.showMessage(f"Atom {atom_idx + 1} colour set to {hex_color}.")
 
     def _toggle_theme(self):
         new_theme = "light" if self._current_theme == "dark" else "dark"
@@ -4654,9 +4709,48 @@ class MainWindow(QMainWindow):
         self._color_overrides = {}
         self._canvas.color_overrides = {}
         if self._canvas.molecule:
+            for atom in self._canvas.molecule.atoms:
+                atom.color = None
             self._legend.update_for(self._canvas.molecule, {})
         self._canvas.request_render()
         self._status.showMessage("Atom colours reset to CPK defaults.")
+
+    def _paint_selected_atoms(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+        sel = self._canvas.selected_atoms
+        if not sel:
+            QMessageBox.information(self, "No selection", "Select atoms first, then use Paint.")
+            return
+        col = QColorDialog.getColor(QColor("#ff6666"), self, "Pick Colour for Selected Atoms")
+        if not col.isValid():
+            return
+        hex_col = col.name()
+        for idx in sel:
+            mol.atoms[idx].color = hex_col
+        self._canvas.selected_atoms.clear()
+        self._canvas.color_overrides = {}
+        self._color_overrides = {}
+        self._legend.update_for(mol, {})
+        self._canvas.request_render()
+        self._status.showMessage(f"Painted {len(sel)} atom(s) with {hex_col}.")
+
+    def _clear_paint(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
+            return
+        n = sum(1 for a in mol.atoms if a.color is not None)
+        if n == 0:
+            self._status.showMessage("No painted atoms to clear.")
+            return
+        for atom in mol.atoms:
+            atom.color = None
+        self._legend.update_for(mol, self._color_overrides)
+        self._canvas.request_render()
+        self._status.showMessage(f"Cleared paint on {n} atom(s).")
 
     # ── View actions ──────────────────────────────────────────────────────────
 
@@ -4678,13 +4772,9 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(self, "About Molvector",
             "<b>Molvector</b> — 3D Molecule Viewer<br><br>"
-            "Ball-and-stick rendering.<br>"
-            "Parsers: XYZ · Gaussian input (.gjf/.com) · Gaussian log (.log/.out)<br><br>"
-            "Controls:<br>"
-            "  &nbsp; Left-drag &nbsp;&nbsp; Rotate<br>"
-            "  &nbsp; Right-drag &nbsp; Pan<br>"
-            "  &nbsp; Scroll &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Zoom<br><br>"
-            "Dependencies: PyQt6 · NumPy · svgwrite"
+            "Ball-and-stick rendering, G16 input generator.<br>"
+            "Parsers: XYZ · Gaussian input (.gjf/.com) · Gaussian log (.log/.out) · Mol file<br><br>"
+            "Dependencies: PyQt6 · NumPy · svgwrite · molstrudel · RDKit · OpenBabel"
         )
 
     # ── callbacks ─────────────────────────────────────────────────────────────
