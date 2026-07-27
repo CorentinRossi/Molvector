@@ -31,7 +31,7 @@ molvector = "molvector:main"
 include = ["molvector*"]
 
 [tool.setuptools.package-data]
-molvector = ["assets/**/*"]
+molvector = ["assets/**/*", "test_files/*"]
 
 [tool.setuptools]
 zip-safe = false

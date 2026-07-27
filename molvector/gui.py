@@ -3347,7 +3347,7 @@ class MainWindow(QMainWindow):
         act_open_test_folder = QAction("Open Test Files Folder", self)
         act_open_test_folder.triggered.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(
-                os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_files"))))
+                os.path.join(os.path.dirname(__file__), "test_files"))))
         help_menu.addAction(act_open_test_folder)
         self._shortcut_actions["open_test_folder"] = act_open_test_folder
 
@@ -4765,7 +4765,7 @@ class MainWindow(QMainWindow):
     # ── Help ──────────────────────────────────────────────────────────────────
 
     def _open_test_molecule(self):
-        test_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_files", "c5h6.xyz")
+        test_path = os.path.join(os.path.dirname(__file__), "test_files", "c5h6.xyz")
         if os.path.isfile(test_path):
             self._load_and_display(test_path)
 
