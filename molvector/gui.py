@@ -338,7 +338,8 @@ class ColorButton(QPushButton):
     def __init__(self, initial_color: str = "#ffffff", parent=None):
         super().__init__(parent)
         self.setObjectName("color_btn")
-        self.setFixedSize(36, 26)
+        self.setFixedSize(16, 16)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._color = initial_color
         self._update_swatch()
         self.clicked.connect(self._pick)
@@ -354,8 +355,21 @@ class ColorButton(QPushButton):
             self.colorChanged.emit(self._color)
 
     def _update_swatch(self):
-        # The border/size is handled by the main stylesheet via #color_btn
-        self.setStyleSheet(f"background:{self._color};")
+        s = 16
+        r = s // 2
+        self.setStyleSheet(
+            f"QPushButton#color_btn {{"
+            f"  background:{self._color};"
+            f"  border-radius:{r}px;"
+            f"  border:1.5px solid palette(mid);"
+            f"  min-width:{s}px; min-height:{s}px;"
+            f"  max-width:{s}px; max-height:{s}px;"
+            f"  padding:0px;"
+            f"}}"
+            f"QPushButton#color_btn:hover {{"
+            f"  border-color:palette(highlight);"
+            f"}}"
+        )
 
     def _pick(self):
         col = QColorDialog.getColor(QColor(self._color), self, "Pick colour")
@@ -2167,6 +2181,8 @@ class MoleculeCanvas(QSvgWidget):
         self.build_mode = False
         self.selection_mode = False
         self.align_mode = False
+        self.paint_mode = False
+        self._paint_color = "#66b2ff"
         self.build_element = "C"
         self._bonding_from: int | None = None
         self._mouse_pos: QPoint | None = None
@@ -2463,6 +2479,19 @@ class MoleculeCanvas(QSvgWidget):
                 self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
                 return
 
+        if self.paint_mode and event.button() == Qt.MouseButton.LeftButton:
+            idx = self._get_hit_atom(event.position().toPoint())
+            if idx is not None and self.molecule:
+                self.requestHistorySave.emit()
+                mod = event.modifiers()
+                if mod & Qt.KeyboardModifier.ShiftModifier:
+                    self.molecule.atoms[idx].color = None
+                else:
+                    self.molecule.atoms[idx].color = self._paint_color
+                self.moleculeChanged.emit()
+                self.request_render()
+                return
+
         if self.selection_mode and event.button() == Qt.MouseButton.LeftButton:
             mod = event.modifiers()
             idx = self._get_hit_atom(event.position().toPoint())
@@ -2668,6 +2697,11 @@ class MoleculeCanvas(QSvgWidget):
         elif self.align_mode:
             if self._get_hit_bond(pos) is not None:
                 self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        elif self.paint_mode:
+            if has_atom:
+                self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             else:
                 self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         else:
@@ -3391,6 +3425,24 @@ class MainWindow(QMainWindow):
         self._act_align_btn.setToolTip("Align tool — click a bond to align it vertically")
         self._act_align_btn.triggered.connect(self._toggle_align_mode)
         self._build_toolbar_obj.addAction(self._act_align_btn)
+
+        # Paint tool (visible only in Selection mode)
+        self._act_paint_btn = QAction("Paint atom", self)
+        self._act_paint_btn.setCheckable(True)
+        self._act_paint_btn.setToolTip("Toggle paint mode — click an atom to paint it (Shift+click to remove paint)")
+        self._act_paint_btn.triggered.connect(self._toggle_paint_mode)
+        self._build_toolbar_obj.addAction(self._act_paint_btn)
+        self._act_paint_btn.setVisible(False)
+        self._paint_color_btn = ColorButton("#66b2ff")
+        self._paint_color_btn.setToolTip("Pick paint colour")
+        self._paint_color_btn.colorChanged.connect(self._on_paint_color_changed)
+        self._act_paint_color = self._build_toolbar_obj.addWidget(self._paint_color_btn)
+        self._act_paint_color.setVisible(False)
+        self._act_clear_paint = QAction("Clear paint", self)
+        self._act_clear_paint.setToolTip("Remove paint from all atoms")
+        self._act_clear_paint.triggered.connect(self._clear_paint)
+        self._build_toolbar_obj.addAction(self._act_clear_paint)
+        self._act_clear_paint.setVisible(False)
 
         self._sep_build1 = self._build_toolbar_obj.addSeparator()
         self._act_lbl_elem = self._build_toolbar_obj.addWidget(QLabel(" Element: "))
@@ -4282,6 +4334,9 @@ class MainWindow(QMainWindow):
         elif self._canvas.align_mode:
             self._status.showMessage("Align: Click bond align vertically · Shift+click align horizontally · Scroll zoom")
             self._hint.setText("Click bond  align vertically\nShift+click  align horizontally")
+        elif self._canvas.paint_mode:
+            self._status.showMessage("Paint: Click atom to paint · Shift+click to remove paint")
+            self._hint.setText("Click atom  paint\nShift+click  remove paint")
         else:
             self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
             self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
@@ -4297,10 +4352,12 @@ class MainWindow(QMainWindow):
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
             self._canvas.align_mode = False
+            self._act_paint_btn.setChecked(False)
+            self._canvas.paint_mode = False
             self._set_build_options_visible(False)
-        else:
-            self._canvas.selected_atoms.clear()
-            self._canvas.request_render()
+        self._act_paint_btn.setVisible(enabled)
+        self._act_paint_color.setVisible(enabled)
+        self._act_clear_paint.setVisible(enabled)
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
 
@@ -4312,6 +4369,11 @@ class MainWindow(QMainWindow):
             self._act_align_toggle.setChecked(False)
             self._act_align_btn.setChecked(False)
             self._canvas.align_mode = False
+            self._act_paint_btn.setChecked(False)
+            self._canvas.paint_mode = False
+        self._act_paint_btn.setVisible(False)
+        self._act_paint_color.setVisible(False)
+        self._act_clear_paint.setVisible(False)
         self._act_build_toggle.setChecked(enabled)
         self._act_build_btn.setChecked(enabled)
         self._canvas.build_mode = enabled
@@ -4327,12 +4389,50 @@ class MainWindow(QMainWindow):
             self._act_build_btn.setChecked(False)
             self._act_build_toggle.setChecked(False)
             self._canvas.build_mode = False
+            self._act_paint_btn.setChecked(False)
+            self._canvas.paint_mode = False
             self._set_build_options_visible(False)
+        self._act_paint_btn.setVisible(False)
+        self._act_paint_color.setVisible(False)
+        self._act_clear_paint.setVisible(False)
         self._act_align_toggle.setChecked(enabled)
         self._act_align_btn.setChecked(enabled)
         self._canvas.align_mode = enabled
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _toggle_paint_mode(self, enabled: bool):
+        if enabled:
+            sel = self._canvas.selected_atoms
+            if sel:
+                self._paint_selected_with_color()
+                self._act_paint_btn.setChecked(False)
+                return
+        self._act_paint_btn.setChecked(enabled)
+        self._canvas.paint_mode = enabled
+        self._update_status_for_mode()
+        self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _on_paint_color_changed(self, hex_color: str):
+        if hasattr(self._canvas, '_paint_color'):
+            self._canvas._paint_color = hex_color
+
+    def _paint_selected_with_color(self):
+        mol = self._canvas.molecule
+        if mol is None:
+            return
+        sel = self._canvas.selected_atoms
+        if not sel:
+            return
+        hex_col = self._canvas._paint_color
+        for idx in sel:
+            mol.atoms[idx].color = hex_col
+        self._canvas.selected_atoms.clear()
+        self._canvas.color_overrides = {}
+        self._color_overrides = {}
+        self._legend.update_for(mol, {})
+        self._canvas.request_render()
+        self._status.showMessage(f"Painted {len(sel)} atom(s) with {hex_col}.")
 
     def _on_build_elem_change(self, elem: str):
         if elem == "...":
