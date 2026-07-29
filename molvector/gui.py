@@ -25,7 +25,7 @@ Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
   Edit          Settings / Style / Shortcuts / Info / Edit Charge / InChI / Selection Mode / Build Mode / Align Mode
   View          Reset View / Preset orientations / Overlay Settings
-  Calculations  Generate G16 Input / Calculate Rotational Constants / Calculate Dipole Moment / Calculation Results
+  Calculations  Generate G16 Input / Calculate Rotational Constants / Calculate Dipole Moment / Open Terminal / Calculation Results
   Build         Clean / Undo / Redo / Optimize / Disable Bond Order
   Help          Open Test Molecule / About
 
@@ -35,7 +35,7 @@ Dependencies:
     pip install PyQt6 numpy svgwrite
 """
 
-import sys, os, math, json, tempfile, platform
+import sys, os, math, json, tempfile, platform, shlex, shutil, re
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 
@@ -50,8 +50,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData, QEvent
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence, QDesktopServices
+from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData, QEvent, QProcess, QProcessEnvironment
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence, QDesktopServices, QTextCursor
 from PyQt6.QtGui import QDrag
 
 try:
@@ -1284,10 +1284,269 @@ class CalculationsDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TERMINAL DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TerminalDialog(QDialog):
+    SCP_SERVERS_FILE = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", ".molvector_scp_servers.json"
+    ))
+
+    def __init__(self, workdir: str = "", current_file: str = "", mol=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Terminal")
+        self.setMinimumSize(600, 350)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._workdir = workdir
+        self._current_file = current_file
+        self._mol = mol
+        self._process = None
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+
+        self._toolbar = QHBoxLayout()
+        self._macro_btn = QPushButton("SCP…", self)
+        self._macro_btn.setToolTip("Copy file to server via SCP")
+        self._macro_btn.clicked.connect(self._run_macro)
+        self._toolbar.addWidget(self._macro_btn)
+        self._toolbar.addStretch()
+        layout.addLayout(self._toolbar)
+
+        self._output = QPlainTextEdit(self)
+        self._output.setReadOnly(True)
+        self._output.setFont(QFont("Menlo, Monaco, Courier New, monospace", 11))
+        self._output.setStyleSheet(
+            "QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; border: none; }"
+        )
+        self._output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self._output, 1)
+
+        input_row = QHBoxLayout()
+        self._prompt = QLabel("$ ")
+        self._prompt.setFont(QFont("Menlo, Monaco, Courier New, monospace", 11))
+        self._prompt.setStyleSheet("color: #d4d4d4;")
+        input_row.addWidget(self._prompt)
+
+        self._input = QLineEdit(self)
+        self._input.setFont(QFont("Menlo, Monaco, Courier New, monospace", 11))
+        self._input.setStyleSheet(
+            "QLineEdit { background: #1e1e1e; color: #d4d4d4; border: 1px solid #333; padding: 2px 4px; }"
+        )
+        self._input.returnPressed.connect(self._on_input)
+        input_row.addWidget(self._input, 1)
+
+        layout.addLayout(input_row)
+
+        self._macro_btn.setAutoDefault(False)
+        self._input.setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._process is None:
+            self._start_process()
+
+    _ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+    def _start_process(self):
+        self._process = QProcess(self)
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._process.readyReadStandardOutput.connect(self._on_stdout)
+        self._process.finished.connect(self._on_process_finished)
+        self._process.errorOccurred.connect(self._on_process_error)
+
+        is_win = platform.system() == "Windows"
+
+        if is_win:
+            self._process.start("cmd.exe", [])
+            if self._workdir:
+                self._process.write(f"cd /d {self._workdir}\n".encode("utf-8"))
+                self.setWindowTitle(f"Terminal — {self._workdir}")
+        else:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("TERM", "xterm-256color")
+            env.insert("PS1", "$ ")
+            self._process.setProcessEnvironment(env)
+
+            bash = shutil.which("bash") or "/bin/bash"
+            script_path = shutil.which("script")
+            if script_path:
+                self._process.start(script_path, ["-q", "/dev/null", bash, "-i"])
+            else:
+                self._process.start(bash, ["-i"])
+
+            if self._workdir:
+                self._process.write(f"cd {shlex.quote(self._workdir)}\n".encode("utf-8"))
+                self.setWindowTitle(f"Terminal — {self._workdir}")
+
+    def _on_stdout(self):
+        data = self._process.readAllStandardOutput()
+        text = data.data().decode("utf-8", errors="replace")
+        text = self._ANSI_RE.sub("", text)
+        self._output.moveCursor(QTextCursor.MoveOperation.End)
+        self._output.insertPlainText(text)
+        self._output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _on_input(self):
+        cmd = self._input.text()
+        self._input.clear()
+        if self._process is None or self._process.state() != QProcess.ProcessState.Running:
+            self._output.insertPlainText("[Process not running]\n")
+            return
+        if cmd.strip().lower() in ("exit", "quit"):
+            self._process.write(b"exit\n")
+            return
+        self._process.write((cmd + "\n").encode("utf-8"))
+
+    @staticmethod
+    def _load_scp_servers():
+        try:
+            with open(TerminalDialog.SCP_SERVERS_FILE) as f:
+                servers = json.load(f).get("servers", [])
+        except Exception:
+            return []
+        cleaned = []
+        for s in servers:
+            if ":" in s:
+                host, path = s.split(":", 1)
+                base = os.path.basename(path.rstrip("/"))
+                if "." in base:
+                    path = os.path.dirname(path)
+                    s = f"{host}:{path}"
+            if s not in cleaned:
+                cleaned.append(s)
+        return cleaned
+
+    @staticmethod
+    def _save_scp_server(destination: str):
+        servers = TerminalDialog._load_scp_servers()
+        if destination not in servers:
+            servers.append(destination)
+        os.makedirs(os.path.dirname(TerminalDialog.SCP_SERVERS_FILE) or ".", exist_ok=True)
+        with open(TerminalDialog.SCP_SERVERS_FILE, "w") as f:
+            json.dump({"servers": servers}, f)
+
+    def _run_macro(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("SCP — Copy to Server")
+        dlg.setMinimumWidth(750)
+        form = QFormLayout(dlg)
+
+        file_row = QHBoxLayout()
+        file_edit = QLineEdit(dlg)
+        file_edit.setPlaceholderText("/path/to/local/file")
+        file_edit.setMinimumWidth(400)
+        file_row.addWidget(file_edit, 1)
+        form.addRow("File:", file_row)
+
+        use_row = QHBoxLayout()
+        use_input_cb = QCheckBox("Use current input", dlg)
+        use_input_cb.setEnabled(self._mol is not None)
+        use_input_cb.setChecked(True)
+        use_row.addWidget(use_input_cb)
+        use_row.addSpacing(10)
+        input_combo = QComboBox(dlg)
+        input_combo.addItem("G16")
+        input_combo.setToolTip("Input type to generate")
+        input_combo.setMinimumContentsLength(8)
+        input_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        use_row.addWidget(input_combo)
+        form.addRow("", use_row)
+
+        as_edit = QLineEdit(dlg)
+        as_edit.setPlaceholderText("filename on server (optional)")
+        as_edit.setMinimumWidth(400)
+        form.addRow("As:", as_edit)
+
+        def _on_use_input_toggled(checked: bool):
+            if not checked or self._mol is None:
+                return
+            kind = input_combo.currentText()
+            if kind == "G16":
+                if G16InputDialog._saved_state and "preview" in G16InputDialog._saved_state:
+                    content = G16InputDialog._saved_state["preview"]
+                else:
+                    content = save_gaussian_input(self._mol)
+                suffix = ".com"
+            else:
+                return
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=suffix, prefix="molvector_input_",
+                delete=False, dir=self._workdir or None,
+            )
+            tmp.write(content)
+            tmp.close()
+            file_edit.setText(tmp.name)
+            as_edit.setText(os.path.basename(tmp.name))
+
+        use_input_cb.toggled.connect(_on_use_input_toggled)
+        if use_input_cb.isChecked() and self._mol is not None:
+            _on_use_input_toggled(True)
+
+        servers = self._load_scp_servers()
+        dest_edit = QLineEdit(dlg)
+        dest_edit.setPlaceholderText("user@server:/path/on/server")
+        dest_edit.setMinimumWidth(400)
+        if servers:
+            dest_edit.setText(servers[-1])
+        form.addRow("Server path:", dest_edit)
+
+        remember_cb = QCheckBox("Remember server", dlg)
+        form.addRow("", remember_cb)
+
+        btn_row = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dlg)
+        btn_row.accepted.connect(dlg.accept)
+        btn_row.rejected.connect(dlg.reject)
+        form.addRow(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        src = file_edit.text().strip()
+        dst = dest_edit.text().strip()
+        if not src or not dst:
+            return
+
+        remote_name = as_edit.text().strip()
+        if remote_name:
+            sep = "" if dst.endswith("/") else "/"
+            dst = f"{dst}{sep}{remote_name}"
+
+        if remember_cb.isChecked() and dst:
+            save_dst = dest_edit.text().strip()
+            if not save_dst.endswith("/"):
+                save_dst += "/"
+            self._save_scp_server(save_dst)
+
+        cmd = f"scp {shlex.quote(src)} {shlex.quote(dst)}\n"
+        self._output.moveCursor(QTextCursor.MoveOperation.End)
+        self._output.insertPlainText(f"$ {cmd}")
+        if self._process and self._process.state() == QProcess.ProcessState.Running:
+            self._process.write(cmd.encode("utf-8"))
+
+    def _on_process_finished(self):
+        self._output.appendPlainText("\n[Process terminated]")
+        self._input.setEnabled(False)
+
+    def _on_process_error(self, error):
+        self._output.appendPlainText(f"\n[Process error: {error}]")
+        self._input.setEnabled(False)
+
+    def closeEvent(self, event):
+        if self._process is not None:
+            self._process.terminate()
+            if not self._process.waitForFinished(3000):
+                self._process.kill()
+        super().closeEvent(event)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # G16 INPUT GENERATOR DIALOG
 # ─────────────────────────────────────────────────────────────────────────────
 
 class G16InputDialog(QDialog):
+    _saved_state: dict = {}
+
     def __init__(self, mol, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Generate G16 Input")
@@ -1421,6 +1680,9 @@ class G16InputDialog(QDialog):
         self._btn_sync.clicked.connect(self._sync_from_fields)
         btn_layout.addWidget(self._btn_sync)
         btn_layout.addStretch()
+        btn_ok = QPushButton("Ok")
+        btn_ok.clicked.connect(self._on_ok)
+        btn_layout.addWidget(btn_ok)
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
@@ -1434,21 +1696,89 @@ class G16InputDialog(QDialog):
         ]
 
         # Pre-populate fields from loaded molecule header
-        if mol.g16_nproc is not None:
-            self._nproc_spin.blockSignals(True)
-            self._nproc_spin.setValue(mol.g16_nproc)
-            self._nproc_spin.blockSignals(False)
-        if mol.g16_mem is not None:
-            self._mem_combo.blockSignals(True)
-            self._mem_combo.setCurrentText(mol.g16_mem.rstrip("GB"))
-            self._mem_combo.blockSignals(False)
-        if mol.g16_chk is not None:
-            self._custom_pct.setText(f"%chk={mol.g16_chk}")
-        if mol.g16_route is not None:
-            self._loaded_route = mol.g16_route
-            self._parse_route_into_fields(mol.g16_route)
+        if G16InputDialog._saved_state:
+            self._restore_state()
+        else:
+            if mol.g16_nproc is not None:
+                self._nproc_spin.blockSignals(True)
+                self._nproc_spin.setValue(mol.g16_nproc)
+                self._nproc_spin.blockSignals(False)
+            if mol.g16_mem is not None:
+                self._mem_combo.blockSignals(True)
+                self._mem_combo.setCurrentText(mol.g16_mem.rstrip("GB"))
+                self._mem_combo.blockSignals(False)
+            if mol.g16_chk is not None:
+                self._custom_pct.setText(f"%chk={mol.g16_chk}")
+            if mol.g16_route is not None:
+                self._loaded_route = mol.g16_route
+                self._parse_route_into_fields(mol.g16_route)
+            self._generating = True
+            self._last_generated = self._build_text()
+            self._preview.setPlainText(self._last_generated)
+            self._generating = False
 
-        self._sync_from_fields()
+    def _on_ok(self):
+        self._save_state()
+        self.accept()
+
+    def _save_state(self):
+        G16InputDialog._saved_state = {
+            "preview": self._preview.toPlainText(),
+            "job": self._job_combo.currentIndex(),
+            "job_custom": self._job_custom.text(),
+            "method": self._method_combo.currentIndex(),
+            "method_custom": self._method_custom.text(),
+            "basis": self._basis_combo.currentIndex(),
+            "basis_custom": self._basis_custom.text(),
+            "charge": self._charge_spin.value(),
+            "mult": self._mult_spin.value(),
+            "nproc": self._nproc_spin.value(),
+            "mem": self._mem_combo.currentText(),
+            "custom_pct": self._custom_pct.text(),
+            "loaded_route": self._loaded_route,
+        }
+
+    def _restore_state(self):
+        s = G16InputDialog._saved_state
+
+        self._generating = True
+        self._preview.setPlainText(s.get("preview", ""))
+        self._generating = False
+        self._last_generated = s.get("preview", "")
+
+        self._job_combo.blockSignals(True)
+        self._method_combo.blockSignals(True)
+        self._basis_combo.blockSignals(True)
+        last = self._job_combo.count() - 1
+        self._job_combo.setCurrentIndex(s.get("job", 0))
+        self._job_custom.setText(s.get("job_custom", ""))
+        self._job_custom.setVisible(s.get("job", 0) == last)
+        self._method_combo.setCurrentIndex(s.get("method", 0))
+        self._method_custom.setText(s.get("method_custom", ""))
+        self._method_custom.setVisible(s.get("method", 0) == last)
+        self._basis_combo.setCurrentIndex(s.get("basis", 0))
+        self._basis_custom.setText(s.get("basis_custom", ""))
+        self._basis_custom.setVisible(s.get("basis", 0) == last)
+        self._job_combo.blockSignals(False)
+        self._method_combo.blockSignals(False)
+        self._basis_combo.blockSignals(False)
+
+        self._charge_spin.blockSignals(True)
+        self._charge_spin.setValue(s.get("charge", self._charge_spin.value()))
+        self._charge_spin.blockSignals(False)
+        self._mult_spin.blockSignals(True)
+        self._mult_spin.setValue(s.get("mult", self._mult_spin.value()))
+        self._mult_spin.blockSignals(False)
+        self._nproc_spin.blockSignals(True)
+        self._nproc_spin.setValue(s.get("nproc", self._nproc_spin.value()))
+        self._nproc_spin.blockSignals(False)
+        self._mem_combo.blockSignals(True)
+        self._mem_combo.setCurrentText(s.get("mem", self._mem_combo.currentText()))
+        self._mem_combo.blockSignals(False)
+        self._custom_pct.blockSignals(True)
+        self._custom_pct.setText(s.get("custom_pct", ""))
+        self._custom_pct.blockSignals(False)
+        self._loaded_route = s.get("loaded_route")
 
     def _set_fields_enabled(self, enabled: bool):
         for w in self._all_fields:
@@ -3087,6 +3417,7 @@ class MainWindow(QMainWindow):
         "g16_input": "",
         "rotational_constants": "",
         "dipole_moment": "",
+        "terminal": "",
         "calc_results": _mod("Ctrl+M"),
         "clean_molecule": _mod("Ctrl+L"),
         "undo": _mod("Ctrl+Z"),
@@ -3135,6 +3466,7 @@ class MainWindow(QMainWindow):
         self._mode_icon_size = QSize(22, 22)
 
         self._shortcut_actions: dict = {}
+        self._terminal_dialog: Optional['TerminalDialog'] = None
 
         self._build_central()
         self._build_menubar()
@@ -3325,6 +3657,12 @@ class MainWindow(QMainWindow):
         act_dipole.triggered.connect(self._calculate_dipole_moment)
         self._menu_calc.addAction(act_dipole)
         self._shortcut_actions["dipole_moment"] = act_dipole
+
+        self._menu_calc.addSeparator()
+        act_terminal = QAction("Open Terminal", self)
+        act_terminal.triggered.connect(self._open_terminal)
+        self._menu_calc.addAction(act_terminal)
+        self._shortcut_actions["terminal"] = act_terminal
 
         # ── Build ──
         self._menu_build = mb.addMenu("&Build")
@@ -3691,8 +4029,8 @@ class MainWindow(QMainWindow):
                                  f"{type(e).__name__}: {e}")
 
     def _update_calculations_menu(self, mol: Molecule):
-        # Keep G16 Input, separator, Rotational Constants, Dipole Moment
-        while len(self._menu_calc.actions()) > 4:
+        # Keep G16 Input, sep, Rotational Constants, Dipole Moment, sep, Open Terminal
+        while len(self._menu_calc.actions()) > 6:
             self._menu_calc.removeAction(self._menu_calc.actions()[-1])
 
         if mol and (mol.vibrational_modes or mol.excited_states):
@@ -3781,6 +4119,25 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, 'Dipole moment', "\n".join(lines))
 
+    def _open_terminal(self):
+        if self._terminal_dialog is not None:
+            try:
+                if self._terminal_dialog.isVisible():
+                    self._terminal_dialog.raise_()
+                    self._terminal_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                self._terminal_dialog = None
+        workdir = os.path.dirname(os.path.abspath(self._current_path)) if self._current_path else ""
+        self._terminal_dialog = TerminalDialog(
+            workdir=workdir, current_file=self._current_path,
+            mol=self._canvas.molecule, parent=self,
+        )
+        self._terminal_dialog.destroyed.connect(lambda: self._on_terminal_destroyed())
+        self._terminal_dialog.show()
+
+    def _on_terminal_destroyed(self):
+        self._terminal_dialog = None
 
     def _on_anim_toggle(self, enabled: bool):
         if enabled:
