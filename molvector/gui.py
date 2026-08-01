@@ -2041,7 +2041,7 @@ _ELEM_CATEGORY_COLORS = {
     "metalloid":      "#00BCD4",
     "halogen":        "#1E88E5",
     "transition":     "#42A5F5",
-    "post_transition":"#78909C",
+    "post_transition":"#abad98",
     "lanthanide":     "#E91E63",
     "actinide":       "#D32F2F",
     "unknown":        "#757575",
@@ -2105,11 +2105,12 @@ def _element_category(sym: str, Z: int) -> str:
 class PeriodicTableDialog(QDialog):
     elementSelected = pyqtSignal(str)
 
-    def __init__(self, parent=None, current_element: str = "C"):
+    def __init__(self, parent=None, current_element: str = "C", color_overrides: dict = None):
         super().__init__(parent)
         self.setWindowTitle("Select Element — Periodic Table")
         self.setModal(True)
         self.setMinimumSize(1020, 640)
+        self._overrides = dict(color_overrides or {})
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -2118,6 +2119,8 @@ class PeriodicTableDialog(QDialog):
         grid.setSpacing(3)
 
         btn_size = 52
+        dot_size = 13
+        dot_margin = 4
         btn_font = QFont("", 10, QFont.Weight.Bold)
 
         by_Z = {}
@@ -2130,15 +2133,13 @@ class PeriodicTableDialog(QDialog):
             btn = QPushButton(sym)
             btn.setFixedSize(btn_size, btn_size)
             btn.setFont(btn_font)
-            tooltip = f"{sym} ({Z}) — {ELEM_FULL_NAME.get(sym, 'Unknown')}"
-            btn.setToolTip(tooltip)
 
             cat = _element_category(sym, Z)
-            bg = _ELEM_CATEGORY_COLORS.get(cat, "#757575")
-            is_dark = sum(int(bg[i:i+2],16) for i in (1,3,5)) < 400
+            cat_col = _ELEM_CATEGORY_COLORS.get(cat, "#757575")
+            is_dark = sum(int(cat_col[i:i+2],16) for i in (1,3,5)) < 400
             text_color = "#ffffff" if is_dark else "#000000"
             btn.setStyleSheet(
-                f"QPushButton {{ background:{bg}; color:{text_color}; "
+                f"QPushButton {{ background:{cat_col}; color:{text_color}; "
                 f"border:1px solid rgba(0,0,0,0.2); border-radius:4px; }}"
                 f"QPushButton:hover {{ border:2px solid white; }}"
             )
@@ -2146,9 +2147,26 @@ class PeriodicTableDialog(QDialog):
             is_current = (sym == current_element)
             if is_current:
                 btn.setStyleSheet(
-                    f"QPushButton {{ background:{bg}; color:{text_color}; "
+                    f"QPushButton {{ background:{cat_col}; color:{text_color}; "
                     f"border:2px solid #FFD700; border-radius:4px; }}"
                 )
+
+            # Small CPK-coloured dot in the bottom-right corner
+            cpk = self._overrides.get(sym, CPK_BASE.get(sym, "#cc44aa"))
+            dot = QLabel()
+            dot.setFixedSize(dot_size, dot_size)
+            dot.setStyleSheet(
+                f"background:{cpk}; border:1px solid rgba(0,0,0,0.35); "
+                f"border-radius:{dot_size // 2}px;"
+            )
+            dot.setParent(btn)
+            dot.move(btn_size - dot_size - dot_margin, btn_size - dot_size - dot_margin)
+
+            if self._overrides.get(sym):
+                cpk_txt = f"Custom: {cpk}"
+            else:
+                cpk_txt = f"CPK: {cpk}"
+            btn.setToolTip(f"{sym} ({Z}) — {ELEM_FULL_NAME.get(sym, 'Unknown')}\n{cpk_txt}")
 
             def _make_handler(s):
                 return lambda checked, sym=s: self._select_element(sym)
@@ -4810,7 +4828,7 @@ class MainWindow(QMainWindow):
     def _on_build_elem_change(self, elem: str):
         if elem == "...":
             prev = self._canvas.build_element
-            dlg = PeriodicTableDialog(self, prev)
+            dlg = PeriodicTableDialog(self, prev, self._color_overrides)
             dlg.elementSelected.connect(self._on_pick_from_periodic_table)
             if not dlg.exec():
                 self._elem_combo.setCurrentText(prev)
