@@ -2873,13 +2873,6 @@ class MoleculeCanvas(QSvgWidget):
         self._default_view = self._rot.copy()
         self.request_render()
 
-    def set_preset(self, rx, ry, rz):
-        from molvector.render import rotation_matrix
-        self._rot  = rotation_matrix(math.radians(rx), math.radians(ry), math.radians(rz))
-        self._zoom = 1.0
-        self._pan  = np.array([0.0, 0.0])
-        self.request_render()
-
     def set_principal_axis_preset(self, axis_index):
         import mol_strudel as strudel
         from molvector.render import ATOMIC_MASSES
@@ -2900,6 +2893,18 @@ class MoleculeCanvas(QSvgWidget):
             self._rot = Rx @ Vt
         else:
             self._rot = Vt
+        self._zoom = 1.0
+        self._pan  = np.array([0.0, 0.0])
+        self.request_render()
+
+    def set_coordinate_plane_preset(self, plane_index):
+        from molvector.render import rotation_matrix
+        if plane_index == 0:    # XY plane (view from +Z)
+            self._rot = rotation_matrix(math.radians(90), 0, 0)
+        elif plane_index == 1:  # XZ plane (view from +Y)
+            self._rot = rotation_matrix(0, math.radians(90), 0)
+        else:                   # YZ plane (view from +X)
+            self._rot = rotation_matrix(0, 0, math.radians(90))
         self._zoom = 1.0
         self._pan  = np.array([0.0, 0.0])
         self.request_render()
@@ -3654,13 +3659,9 @@ class MainWindow(QMainWindow):
         "align_mode": "A",
         "reset_view": "R",
         "reset_xyz_axes": "Shift+R",
-        "preset_top": "",
-        "preset_bottom": "",
-        "preset_front": "",
-        "preset_back": "",
-        "preset_left": "",
-        "preset_right": "",
-        "preset_perspective": "",
+        "preset_xy_plane": "",
+        "preset_xz_plane": "",
+        "preset_yz_plane": "",
         "preset_bc_plane": "1",
         "preset_ac_plane": "2",
         "preset_ab_plane": "3",
@@ -3865,19 +3866,13 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
 
         presets_menu = view_menu.addMenu("&Preset Orientation")
-        preset_names = {
-            "preset_top":         ("Top",         ( 5,  0,  0)),
-            "preset_bottom":      ("Bottom",      (175, 0,  0)),
-            "preset_front":       ("Front",       ( 0,  0,  0)),
-            "preset_back":        ("Back",        ( 0,180,  0)),
-            "preset_left":        ("Left",        ( 0,-90,  0)),
-            "preset_right":       ("Right",       ( 0, 90,  0)),
-            "preset_perspective": ("Perspective", (55, 20, 15)),
-        }
-        for key, (label, rot) in preset_names.items():
+
+        presets_menu.addSeparator()
+        for idx, label in [(0, "XY plane"), (1, "XZ plane"), (2, "YZ plane")]:
             a = QAction(label, self)
-            a.triggered.connect(lambda _, r=rot: self._canvas.set_preset(*r))
+            a.triggered.connect(lambda _, i=idx: self._canvas.set_coordinate_plane_preset(i))
             presets_menu.addAction(a)
+            key = f"preset_{label.lower().replace(' ', '_')}"
             self._shortcut_actions[key] = a
 
         presets_menu.addSeparator()
@@ -3886,7 +3881,7 @@ class MainWindow(QMainWindow):
             a.setShortcut(str(idx + 1))
             a.triggered.connect(lambda _, i=idx: self._canvas.set_principal_axis_preset(i))
             presets_menu.addAction(a)
-            key = ["preset_bc_plane", "preset_ac_plane", "preset_ab_plane"][idx]
+            key = f"preset_{label.lower().replace(' ', '_')}"
             self._shortcut_actions[key] = a
 
         view_menu.addSeparator()
