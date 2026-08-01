@@ -466,7 +466,8 @@ class SettingsDialog(QDialog):
                  light_position="top-left", roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
-                 restore_molecule=False, live_callback=None, parent=None):
+                 restore_molecule=False, live_callback=None,
+                 shortcut_actions=None, alt_shortcut_defaults=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(520)
@@ -480,6 +481,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.tabs)
 
         self._build_general_tab(theme, restore_molecule)
+        self._build_shortcuts_tab(shortcut_actions or {}, alt_shortcut_defaults or {})
         self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position)
         self._build_atoms_bonds_tab(atom_scale, bond_width, bond_style,
                                      atom_border_mode, atom_border_scale, atom_border_width,
@@ -505,6 +507,7 @@ class SettingsDialog(QDialog):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Dark", "Light"])
@@ -520,10 +523,135 @@ class SettingsDialog(QDialog):
 
         self.tabs.addTab(page, "&General")
 
+    def _build_shortcuts_tab(self, shortcut_actions: dict, alt_defaults: dict):
+        page = QWidget()
+        vl = QVBoxLayout(page)
+        vl.setSpacing(6)
+
+        self._shortcut_actions = dict(shortcut_actions)
+        self._sc_alt_defaults  = dict(alt_defaults)
+
+        # Conflict warning
+        self._sc_conflict_lbl = QLabel()
+        self._sc_conflict_lbl.setVisible(False)
+        vl.addWidget(self._sc_conflict_lbl)
+
+        # Table
+        self._sc_table = QTableWidget(len(self._shortcut_actions), 3)
+        self._sc_table.setHorizontalHeaderLabels(["Action", "Primary", "Alt"])
+        self._sc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._sc_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._sc_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._sc_table.verticalHeader().setVisible(False)
+        self._sc_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        self._sc_editors = []
+        for row, (aid, action) in enumerate(self._shortcut_actions.items()):
+            name_item = QTableWidgetItem(action.text().replace("&", ""))
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._sc_table.setItem(row, 0, name_item)
+
+            ks1 = QKeySequenceEdit(action.shortcut())
+            ks1.setClearButtonEnabled(True)
+            self._sc_table.setCellWidget(row, 1, ks1)
+            ks1.keySequenceChanged.connect(self._sc_check_conflicts)
+
+            alt_seq = self._sc_alt_defaults.get(aid, "")
+            ks2 = QKeySequenceEdit(QKeySequence(alt_seq))
+            ks2.setClearButtonEnabled(True)
+            self._sc_table.setCellWidget(row, 2, ks2)
+            ks2.keySequenceChanged.connect(self._sc_check_conflicts)
+
+            self._sc_editors.append((ks1, ks2))
+
+        self._sc_check_conflicts()
+        vl.addWidget(self._sc_table)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_restore = QPushButton("Restore Defaults")
+        btn_restore.clicked.connect(self._sc_restore_defaults)
+        btn_row.addWidget(btn_restore)
+
+        btn_make_default = QPushButton("Make Default")
+        btn_make_default.clicked.connect(self._sc_make_default)
+        btn_row.addWidget(btn_make_default)
+        btn_row.addStretch()
+        vl.addLayout(btn_row)
+
+        self.tabs.addTab(page, "&Shortcuts")
+
+    def _sc_check_conflicts(self):
+        usage = {}
+        for row, (aid, action) in enumerate(self._shortcut_actions.items()):
+            for col, editor in enumerate([self._sc_editors[row][0], self._sc_editors[row][1]]):
+                ks = editor.keySequence()
+                if not ks.isEmpty():
+                    seq_str = ks.toString().lower()
+                    if seq_str not in usage:
+                        usage[seq_str] = []
+                    usage[seq_str].append((aid, action.text().replace("&", ""), col))
+
+        conflicts = {k: v for k, v in usage.items() if len(v) > 1}
+
+        if conflicts:
+            lines = []
+            for seq, items in conflicts.items():
+                names = [f"{name} ({'Alt' if c == 1 else 'Primary'})" for _, name, c in items]
+                lines.append(f"⚠ {seq} used by: {', '.join(names)}")
+            self._sc_conflict_lbl.setText(
+                '<span style="color:#ff6b6b; font-weight:bold;">' +
+                "<br>".join(lines) +
+                '</span>'
+            )
+            self._sc_conflict_lbl.setVisible(True)
+        else:
+            self._sc_conflict_lbl.setVisible(False)
+
+    def _sc_restore_defaults(self):
+        for row, (aid, action) in enumerate(self._shortcut_actions.items()):
+            primary = MainWindow.DEFAULT_SHORTCUTS.get(aid, "")
+            alt = MainWindow.ALT_SHORTCUT_DEFAULTS.get(aid, "")
+            self._sc_editors[row][0].setKeySequence(QKeySequence(primary))
+            self._sc_editors[row][1].setKeySequence(QKeySequence(alt))
+        self._sc_check_conflicts()
+
+    def _sc_make_default(self):
+        primary, alt = self._sc_collect_shortcuts()
+        config = {}
+        try:
+            if os.path.exists(self.CONFIG_FILE):
+                with open(self.CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+        except Exception:
+            pass
+        config["shortcuts"] = primary
+        config["alt_shortcuts"] = alt
+        try:
+            with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            QMessageBox.information(self, "Saved", f"Shortcuts saved to:\n{self.CONFIG_FILE}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save shortcuts:\n{e}")
+
+    def _sc_collect_shortcuts(self) -> tuple:
+        primary = {}
+        alt = {}
+        for row, (aid, action) in enumerate(self._shortcut_actions.items()):
+            ks1 = self._sc_editors[row][0].keySequence()
+            ks2 = self._sc_editors[row][1].keySequence()
+            primary[aid] = ks1.toString() if not ks1.isEmpty() else ""
+            alt[aid]     = ks2.toString() if not ks2.isEmpty() else ""
+        return primary, alt
+
+    def get_shortcut_overrides(self) -> tuple:
+        return self._sc_collect_shortcuts()
+
     def _build_overlay_tab(self, bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self._bg_btn = ColorButton(bg_color)
         self._bg_btn.colorChanged.connect(self._on_change)
@@ -561,6 +689,7 @@ class SettingsDialog(QDialog):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self._edit_colors_btn = QPushButton("Edit Atom Colours…")
         self._edit_colors_btn.clicked.connect(self._edit_atom_colors)
@@ -749,12 +878,7 @@ class SettingsDialog(QDialog):
             self._on_change()
 
     def _edit_atom_colors(self):
-        mol = self.parent()._canvas.molecule if self.parent() else None
-        if mol is None:
-            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
-            return
-        elements = sorted({a.element for a in mol.atoms})
-        dlg = AtomColorDialog(elements, self._color_overrides, parent=self)
+        dlg = AtomColorDialog(self._color_overrides, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._color_overrides = dlg.get_overrides()
             self._on_change()
@@ -956,75 +1080,173 @@ class SettingsDialog(QDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AtomColorDialog(QDialog):
-    """Shows one colour-picker row per element present in the molecule."""
+    """Periodic-table colour editor with per-element override support."""
 
-    def __init__(self, elements: list, current_overrides: dict, live_callback=None, parent=None):
+    CONFIG_DIR  = os.path.join(os.path.expanduser("~"), ".config", "molvector")
+    CONFIG_FILE = os.path.join(CONFIG_DIR, "color_table.json")
+
+    def __init__(self, current_overrides: dict, live_callback=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Atom Colours")
-        self.setMinimumWidth(360)
+        self.setWindowTitle("Edit Atom Colours")
+        self.setMinimumSize(1020, 700)
         self._live_callback = live_callback
+        self._overrides = dict(current_overrides)
+
+        # Load any saved defaults on top of current overrides
+        saved = self._load_defaults()
+        for k, v in saved.items():
+            if k not in self._overrides:
+                self._overrides[k] = v
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
 
-        lbl = QLabel("Click a swatch to change an element's colour.")
+        lbl = QLabel("Click a tile to change its CPK colour. "
+                      "\"Set Default\" saves your palette to ~/.config/molvector/color_table.json.")
         lbl.setObjectName("dim")
         lbl.setStyleSheet("font-size:11px;")
         layout.addWidget(lbl)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner = QWidget()
-        grid = QGridLayout(inner)
-        grid.setSpacing(10)
-        grid.setContentsMargins(6, 6, 6, 6)
-        scroll.setWidget(inner)
-        layout.addWidget(scroll)
+        grid = QGridLayout()
+        grid.setSpacing(3)
 
-        self._buttons: dict[str, ColorButton] = {}
+        btn_size = 52
+        dot_size = 13
+        dot_margin = 4
+        btn_font = QFont("", 10, QFont.Weight.Bold)
 
-        for row, elem in enumerate(sorted(elements)):
-            default = CPK_BASE.get(elem, "#cc44aa")
-            current = current_overrides.get(elem, default)
+        self._all_buttons: dict[str, QPushButton] = {}
+        self._dots:        dict[str, QLabel]      = {}
 
-            # Element symbol + name label
-            sym_lbl = QLabel(f"<b>{elem}</b>")
-            sym_lbl.setFixedWidth(28)
-            sym_lbl.setStyleSheet("font-size:13px;")
-            name_lbl = QLabel(ELEM_FULL_NAME.get(elem, elem))
-            name_lbl.setObjectName("dim")
+        for sym, Z, r, c in _PERIODIC_TABLE_LAYOUT:
+            btn = QPushButton(sym)
+            btn.setFixedSize(btn_size, btn_size)
+            btn.setFont(btn_font)
 
-            btn = ColorButton(current)
-            btn.colorChanged.connect(self._trigger_live)
-            self._buttons[elem] = btn
+            cat = _element_category(sym, Z)
+            cat_col = _ELEM_CATEGORY_COLORS.get(cat, "#757575")
+            is_dark = sum(int(cat_col[i:i+2], 16) for i in (1, 3, 5)) < 400
+            text_color = "#ffffff" if is_dark else "#000000"
+            self._apply_tile_style(btn, cat_col, text_color)
 
-            # Reset to CPK button
-            reset_btn = QPushButton("CPK")
-            reset_btn.setFixedWidth(40)
-            reset_btn.setStyleSheet(f"font-size:10px; padding:2px 4px;")
-            reset_btn.setToolTip(f"Reset {elem} to CPK default")
-            reset_btn.clicked.connect(lambda _, e=elem, b=btn: b.set_color(CPK_BASE.get(e, "#cc44aa")))
+            cpk = self._overrides.get(sym, CPK_BASE.get(sym, "#cc44aa"))
+            dot = QLabel()
+            dot.setFixedSize(dot_size, dot_size)
+            dot.setStyleSheet(
+                f"background:{cpk}; border:1px solid rgba(0,0,0,0.35); "
+                f"border-radius:{dot_size // 2}px;"
+            )
+            dot.setParent(btn)
+            dot.move(btn_size - dot_size - dot_margin, btn_size - dot_size - dot_margin)
 
-            grid.addWidget(sym_lbl,   row, 0)
-            grid.addWidget(name_lbl,  row, 1)
-            grid.addWidget(btn,       row, 2)
-            grid.addWidget(reset_btn, row, 3)
+            tooltip = f"{sym} ({Z}) — {ELEM_FULL_NAME.get(sym, 'Unknown')}\nCPK: {cpk}"
+            btn.setToolTip(tooltip)
 
-        grid.setColumnStretch(1, 1)
+            def _make_handler(s):
+                return lambda checked, sym=s: self._pick_color(sym)
 
-        btns = QDialogButtonBox(
+            btn.clicked.connect(_make_handler(sym))
+            grid.addWidget(btn, r, c)
+            self._all_buttons[sym] = btn
+            self._dots[sym]        = dot
+
+        layout.addLayout(grid)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        set_default_btn = QPushButton("Set Default")
+        set_default_btn.setToolTip("Save current overrides as default palette")
+        set_default_btn.clicked.connect(self._save_default)
+        btn_row.addWidget(set_default_btn)
+
+        load_default_btn = QPushButton("Load Default")
+        load_default_btn.setToolTip("Load the saved default palette (color_table.json)")
+        load_default_btn.clicked.connect(self._load_and_apply)
+        btn_row.addWidget(load_default_btn)
+
+        reset_cpks_btn = QPushButton("Reset All to CPK")
+        reset_cpks_btn.setToolTip("Reset every element to its CPK default colour")
+        reset_cpks_btn.clicked.connect(self._reset_all)
+        btn_row.addWidget(reset_cpks_btn)
+
+        btn_row.addStretch()
+
+        ok_cancel = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        ok_cancel.accepted.connect(self.accept)
+        ok_cancel.rejected.connect(self.reject)
+        btn_row.addWidget(ok_cancel)
+        layout.addLayout(btn_row)
+
+    # ── internal helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_tile_style(btn: QPushButton, bg: str, fg: str):
+        btn.setStyleSheet(
+            f"QPushButton {{ background:{bg}; color:{fg}; "
+            f"border:1px solid rgba(0,0,0,0.2); border-radius:4px; }}"
+            f"QPushButton:hover {{ border:2px solid white; }}"
+        )
+
+    def _update_dot(self, sym: str):
+        cpk = self._overrides.get(sym, CPK_BASE.get(sym, "#cc44aa"))
+        dot = self._dots[sym]
+        dot.setStyleSheet(
+            f"background:{cpk}; border:1px solid rgba(0,0,0,0.35); "
+            f"border-radius:6px;"
+        )
+        btn = self._all_buttons[sym]
+        Z = next((z for s, z, *_ in _PERIODIC_TABLE_LAYOUT if s == sym), 0)
+        btn.setToolTip(f"{sym} ({Z}) — {ELEM_FULL_NAME.get(sym, 'Unknown')}\nCPK: {cpk}")
+
+    def _pick_color(self, sym: str):
+        current = self._overrides.get(sym, CPK_BASE.get(sym, "#cc44aa"))
+        color = QColorDialog.getColor(QColor(current), self, f"Pick colour for {sym}")
+        if color.isValid():
+            self._overrides[sym] = color.name()
+            self._update_dot(sym)
+            self._trigger_live()
 
     def _trigger_live(self, *_):
         if self._live_callback:
-            self._live_callback(self.get_overrides())
+            self._live_callback(self._overrides)
+
+    def _reset_all(self):
+        self._overrides.clear()
+        for sym in self._dots:
+            self._update_dot(sym)
+        self._trigger_live()
+
+    def _save_default(self):
+        try:
+            os.makedirs(self.CONFIG_DIR, exist_ok=True)
+            with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._overrides, f, indent=2)
+            QMessageBox.information(self, "Saved", f"Default palette saved to:\n{self.CONFIG_FILE}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save palette:\n{e}")
+
+    @staticmethod
+    def _load_defaults() -> dict:
+        try:
+            with open(AtomColorDialog.CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _load_and_apply(self):
+        saved = self._load_defaults()
+        if not saved:
+            QMessageBox.information(self, "No defaults", "No colour_table.json found.")
+            return
+        self._overrides = saved
+        for sym in self._dots:
+            self._update_dot(sym)
+        self._trigger_live()
 
     def get_overrides(self) -> dict:
-        return {elem: btn.color() for elem, btn in self._buttons.items()}
+        return dict(self._overrides)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3578,7 +3800,7 @@ class MainWindow(QMainWindow):
         self._shortcut_actions["style"] = act_style
 
         act_shortcuts = QAction("&Shortcuts…", self)
-        act_shortcuts.triggered.connect(self._edit_shortcuts)
+        act_shortcuts.triggered.connect(lambda: self._edit_settings(tab_index=1))
         edit_menu.addAction(act_shortcuts)
         self._shortcut_actions["shortcuts"] = act_shortcuts
 
@@ -5094,6 +5316,11 @@ class MainWindow(QMainWindow):
                 self._legend.update_for(self._canvas.molecule, colors)
             self._canvas.request_render()
 
+        _, saved_alt = self._load_shortcut_overrides()
+        alt_defaults = dict(self.ALT_SHORTCUT_DEFAULTS)
+        alt_defaults.update(saved_alt)
+        alt_defaults = {k: v for k, v in alt_defaults.items() if k in self._shortcut_actions}
+
         dlg = SettingsDialog(
             orig[0], orig[1], orig[2], orig[3], orig[4], orig[5],
             atom_border_mode=orig[6], atom_border_scale=orig[7], atom_border_width=orig[8],
@@ -5102,6 +5329,8 @@ class MainWindow(QMainWindow):
             show_axes=orig[13], show_principal_axes=orig[14],
             axes_position=orig[15], principal_axes_position=orig[16],
             restore_molecule=orig[17],
+            shortcut_actions=self._shortcut_actions,
+            alt_shortcut_defaults=alt_defaults,
             live_callback=_live_update, parent=self,
         )
         dlg.tabs.setCurrentIndex(tab_index)
@@ -5126,6 +5355,11 @@ class MainWindow(QMainWindow):
             self._canvas.color_overrides = dlg._color_overrides
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, dlg._color_overrides)
+            # Apply shortcut changes
+            sc_primary, sc_alt = dlg.get_shortcut_overrides()
+            self._apply_shortcuts(sc_primary)
+            self._apply_alt_shortcuts(sc_alt)
+            self._save_shortcut_overrides(sc_primary, sc_alt)
             self._canvas.request_render()
         else:
             (self._current_theme, self._canvas.background,
@@ -5147,10 +5381,10 @@ class MainWindow(QMainWindow):
             self._canvas.request_render()
 
     def _edit_style(self):
-        self._edit_settings(tab_index=2)
+        self._edit_settings(tab_index=3)
 
     def _edit_overlay(self):
-        self._edit_settings(tab_index=1)
+        self._edit_settings(tab_index=2)
 
     def _restart(self):
         self.close()
@@ -5179,37 +5413,37 @@ class MainWindow(QMainWindow):
 
     def _edit_atom_colors(self):
         mol = self._canvas.molecule
-        if mol is None:
-            QMessageBox.information(self, "No molecule", "Load or build a molecule first.")
-            return
-        elements = sorted({a.element for a in mol.atoms})
         orig_overrides = dict(self._color_overrides)
 
         def _live_update(overrides):
             self._color_overrides = overrides
             self._canvas.color_overrides = overrides
-            self._legend.update_for(mol, overrides)
+            if mol:
+                self._legend.update_for(mol, overrides)
             self._canvas.request_render()
 
-        dlg = AtomColorDialog(elements, orig_overrides, live_callback=_live_update, parent=self)
+        dlg = AtomColorDialog(orig_overrides, live_callback=_live_update, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._color_overrides = dlg.get_overrides()
             self._canvas.color_overrides = self._color_overrides
-            self._legend.update_for(mol, self._color_overrides)
+            if mol:
+                self._legend.update_for(mol, self._color_overrides)
             self._canvas.request_render()
         else:
             self._color_overrides = orig_overrides
             self._canvas.color_overrides = orig_overrides
-            self._legend.update_for(mol, orig_overrides)
+            if mol:
+                self._legend.update_for(mol, orig_overrides)
             self._canvas.request_render()
 
     def _reset_colors(self):
-        self._color_overrides = {}
-        self._canvas.color_overrides = {}
+        saved = AtomColorDialog._load_defaults()
+        self._color_overrides = saved
+        self._canvas.color_overrides = saved
         if self._canvas.molecule:
             for atom in self._canvas.molecule.atoms:
                 atom.color = None
-            self._legend.update_for(self._canvas.molecule, {})
+            self._legend.update_for(self._canvas.molecule, saved)
         self._canvas.request_render()
         self._status.showMessage("Atom colours reset to CPK defaults.")
 
