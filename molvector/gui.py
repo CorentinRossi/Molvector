@@ -1459,25 +1459,9 @@ class TerminalDialog(QDialog):
         form.addRow("As:", as_edit)
 
         def _on_use_input_toggled(checked: bool):
-            if not checked or self._mol is None:
-                return
-            kind = input_combo.currentText()
-            if kind == "G16":
-                if G16InputDialog._saved_state and "preview" in G16InputDialog._saved_state:
-                    content = G16InputDialog._saved_state["preview"]
-                else:
-                    content = save_gaussian_input(self._mol)
-                suffix = ".com"
-            else:
-                return
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=suffix, prefix="molvector_input_",
-                delete=False, dir=self._workdir or None,
-            )
-            tmp.write(content)
-            tmp.close()
-            file_edit.setText(tmp.name)
-            as_edit.setText(os.path.basename(tmp.name))
+            if checked and self._mol is not None and not as_edit.text().strip():
+                safe = self._mol.name.replace(" ", "_").replace("/", "_") or "input"
+                as_edit.setText(f"{safe}.com")
 
         use_input_cb.toggled.connect(_on_use_input_toggled)
         if use_input_cb.isChecked() and self._mol is not None:
@@ -1504,7 +1488,31 @@ class TerminalDialog(QDialog):
 
         src = file_edit.text().strip()
         dst = dest_edit.text().strip()
-        if not src or not dst:
+        if not dst:
+            return
+
+        created_tmp = False
+        if use_input_cb.isChecked() and self._mol is not None:
+            kind = input_combo.currentText()
+            if kind == "G16":
+                if G16InputDialog._saved_state and "preview" in G16InputDialog._saved_state:
+                    content = G16InputDialog._saved_state["preview"]
+                else:
+                    content = save_gaussian_input(self._mol)
+                suffix = ".com"
+            else:
+                content = None
+            if content is not None:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=suffix, prefix="molvector_input_",
+                    delete=False, dir=tempfile.gettempdir(),
+                )
+                tmp.write(content)
+                tmp.close()
+                src = tmp.name
+                created_tmp = True
+
+        if not src:
             return
 
         remote_name = as_edit.text().strip()
@@ -1518,7 +1526,10 @@ class TerminalDialog(QDialog):
                 save_dst += "/"
             self._save_scp_server(save_dst)
 
-        cmd = f"scp {shlex.quote(src)} {shlex.quote(dst)}\n"
+        cmd = f"scp {shlex.quote(src)} {shlex.quote(dst)}"
+        if created_tmp:
+            cmd += f" && rm -f {shlex.quote(src)}"
+        cmd += "\n"
         self._output.moveCursor(QTextCursor.MoveOperation.End)
         self._output.insertPlainText(f"$ {cmd}")
         if self._process and self._process.state() == QProcess.ProcessState.Running:
@@ -3522,6 +3533,11 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        act_restart = QAction("&Restart", self)
+        act_restart.setShortcut(_mod("Ctrl+Alt+Q"))
+        act_restart.triggered.connect(self._restart)
+        file_menu.addAction(act_restart)
+
         act_quit = QAction("&Quit", self)
         act_quit.setShortcut(_mod("Ctrl+Q"))
         act_quit.triggered.connect(self.close)
@@ -5117,6 +5133,13 @@ class MainWindow(QMainWindow):
 
     def _edit_overlay(self):
         self._edit_settings(tab_index=1)
+
+    def _restart(self):
+        self.close()
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, sys.argv[1:])
+        else:
+            QProcess.startDetached(sys.executable, [os.path.abspath(sys.argv[0])] + sys.argv[1:])
 
     def closeEvent(self, event):
         if self._current_path and self._canvas.molecule:
