@@ -1705,7 +1705,7 @@ def render_molecule(
     bond_width_px: float = 10.0,
     background: str = "#0a0a12",
     color_overrides: Optional[Dict[str, str]] = None,
-    output_path: str = "molecule.svg",
+    output_path: Optional[str] = "molecule.svg",
     export_mode: bool = False,
     vectors: Optional[List[Tuple[int, float, float, float, str]]] = None,
     active_vectors: Optional[np.ndarray] = None,
@@ -1725,6 +1725,10 @@ def render_molecule(
     axes_position: str = "bottom-left",
     principal_axes_position: str = "bottom-left",
     axes_rot_override: Optional[np.ndarray] = None,
+    m_normal_override: Optional[np.ndarray] = None,
+    fast_render: bool = False,
+    svg_prefix: Optional[str] = None,
+    cached_grad_stops: Optional[Dict[str, list]] = None,
 ) -> str:
 
     rot = rot_matrix_override if rot_matrix_override is not None \
@@ -1779,19 +1783,29 @@ def render_molecule(
         
         proj.append((px_coord, py_coord, rp[2], r_px))
 
-    dwg  = svgwrite.Drawing(output_path, size=(canvas_w, canvas_h))
+    dwg  = svgwrite.Drawing(output_path or "__mem__", size=(canvas_w, canvas_h))
     defs = dwg.defs
     
     # Use a random prefix for all IDs to prevent collisions in Inkscape
-    prefix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    prefix = svg_prefix or "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
     if not export_mode:
         dwg.add(dwg.rect(insert=(0,0), size=(canvas_w,canvas_h), fill=background))
 
-    registered: set = set()
+    _grad_added: set = set()
 
     def ensure_grad(elem: str) -> str:
         gid = f"sph_{elem}_{prefix}"
-        if gid in registered:
+        if gid in _grad_added:
+            return gid
+        _grad_added.add(gid)
+        cached = (cached_grad_stops or {}).get(elem)
+        if cached is not None:
+            g = dwg.radialGradient(id=gid, center=(grad_cx, grad_cy), r="0.68")
+            g["fx"]=grad_cx; g["fy"]=grad_cy
+            g["gradientUnits"] = "objectBoundingBox"
+            for pct, color in cached:
+                g.add_stop_color(f"{pct*100:.1f}%", color, 1.0)
+            defs.add(g)
             return gid
         base = base_colors.get(elem, DEFAULT_BASE)
         dark = dark_colors.get(elem, DEFAULT_DARK)
@@ -1799,19 +1813,23 @@ def render_molecule(
         g = dwg.radialGradient(id=gid, center=(grad_cx, grad_cy), r="0.68")
         g["fx"]=grad_cx; g["fy"]=grad_cy
         g["gradientUnits"] = "objectBoundingBox"
-        for pct, color in compute_gradient_stops(
-                base, dark, li, roughness):
+        stops = compute_gradient_stops(base, dark, li, roughness)
+        for pct, color in stops:
             g.add_stop_color(f"{pct*100:.1f}%", color, 1.0)
         defs.add(g)
-        registered.add(gid)
+        if cached_grad_stops is not None:
+            cached_grad_stops[elem] = stops
         return gid
 
-    for idx, atom in enumerate(mol.atoms):
-        key = _atom_custom_keys.get(idx, atom.element)
-        ensure_grad(key)
+    if not fast_render:
+        for idx, atom in enumerate(mol.atoms):
+            key = _atom_custom_keys.get(idx, atom.element)
+            ensure_grad(key)
 
     # SVD to find best-fit molecule plane normal
-    if len(centered) >= 3:
+    if m_normal_override is not None:
+        M_normal = m_normal_override
+    elif len(centered) >= 3:
         U, S, Vt = np.linalg.svd(centered)
         M_normal = Vt[-1]
     else:
@@ -1902,6 +1920,15 @@ def render_molecule(
             px = -uy_bond
             py = ux_bond
 
+            if fast_render:
+                z_sort = (orig_az + orig_bz) / 2.0
+                if bond_style in ("grey", "unicolor"):
+                    flat_col = bond_color
+                else:
+                    flat_col = base_colors.get(_atom_custom_keys.get(ai, mol.atoms[ai].element), DEFAULT_BASE)
+                draw_list.append((z_sort, 0, ("bond_flat", (ax, ay, bx, by), px, py, indiv_hw_px, flat_col)))
+                continue
+
             if bond_style in ("grey", "unicolor"):
                 base = bond_color
                 dark = auto_dark(bond_color)
@@ -1967,11 +1994,14 @@ def render_molecule(
     for idx,atom in enumerate(mol.atoms):
         ax,ay,az,ar = proj[idx]
         key = _atom_custom_keys.get(idx, atom.element)
-        gid  = ensure_grad(key)
         base = base_colors.get(key, DEFAULT_BASE)
         dark = dark_colors.get(key, DEFAULT_DARK)
         is_sel = selected_indices and idx in selected_indices
-        draw_list.append((az, 1, ("atom",ax,ay,ar,gid,base,dark,atom.element,is_sel)))
+        if fast_render:
+            draw_list.append((az, 1, ("atom_flat",ax,ay,ar,base,dark,atom.element,is_sel)))
+        else:
+            gid  = ensure_grad(key)
+            draw_list.append((az, 1, ("atom",ax,ay,ar,gid,base,dark,atom.element,is_sel)))
 
     # Add vectors (e.g. vibrational displacements)
     if vectors:
@@ -1999,7 +2029,35 @@ def render_molecule(
     molecule_group = dwg.g(id="molecule")
     for _,__,item in draw_list:
         kind = item[0]
-        if kind == "bond_half":
+        if kind == "bond_flat":
+            _, (x0, y0, x1, y1), px, py, hw, flat_col = item
+            dx = x1 - x0
+            dy = y1 - y0
+            length = math.hypot(dx, dy)
+            if length > 0:
+                ux = dx / length
+                uy = dy / length
+                x0_r = x0 - ux * hw
+                y0_r = y0 - uy * hw
+                x1_r = x1 + ux * hw
+                y1_r = y1 + uy * hw
+            else:
+                x0_r, y0_r = x0, y0
+                x1_r, y1_r = x1, y1
+            rw = math.hypot(x1_r - x0_r, y1_r - y0_r)
+            if rw < 0.01:
+                continue
+            rx = (x0_r + x1_r) / 2
+            ry = (y0_r + y1_r) / 2
+            angle = math.degrees(math.atan2(-px, py))
+            molecule_group.add(dwg.rect(
+                insert=(-rw / 2, -hw),
+                size=(rw, hw * 2),
+                rx=hw, ry=hw,
+                fill=flat_col, stroke="none",
+                transform=f"translate({rx:.1f},{ry:.1f}) rotate({angle:.1f})"
+            ))
+        elif kind == "bond_half":
             _, pts, px, py, indiv_hw, b_id, base, dark = item
             
             A = px * Lx + py * Ly
@@ -2140,6 +2198,18 @@ def render_molecule(
                 rx=hw, ry=hw, fill=f"url(#{sh_id})", stroke="none",
                 transform=f"translate({rx:.1f},{ry:.1f}) rotate({angle:.1f})"
             ))
+        elif kind == "atom_flat":
+            _, ax, ay, ar, base, dark, elem, is_sel = item
+            if is_sel:
+                molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.35, fill="none", stroke="#00aaff", stroke_width=2.0, opacity="0.45"))
+                molecule_group.add(dwg.circle(center=(ax,ay), r=ar*1.15, fill="none", stroke="#44ddff", stroke_width=1.2, opacity="0.75"))
+            if atom_border_mode == "none":
+                pass
+            elif atom_border_mode == "constant":
+                molecule_group.add(dwg.circle(center=(ax,ay),r=ar+atom_border_width,fill=dark,stroke="none"))
+            else:
+                molecule_group.add(dwg.circle(center=(ax,ay),r=ar*atom_border_scale,fill=dark,stroke="none"))
+            molecule_group.add(dwg.circle(center=(ax,ay),r=ar,fill=base,stroke="none"))
         elif kind == "atom":
             _, ax, ay, ar, gid, base, dark, elem, is_sel = item
             if is_sel:
@@ -2240,5 +2310,7 @@ def render_molecule(
                              font_size=8, font_family="monospace",
                              fill=col, font_weight="bold"))
 
-    dwg.save()
-    return output_path
+    if output_path:
+        dwg.save()
+        return output_path
+    return dwg.tostring()

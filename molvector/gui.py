@@ -35,7 +35,7 @@ Dependencies:
     pip install PyQt6 numpy svgwrite
 """
 
-import sys, os, math, json, tempfile, platform, shlex, shutil, re
+import sys, os, math, json, tempfile, platform, shlex, shutil, re, random, string
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 
@@ -466,7 +466,7 @@ class SettingsDialog(QDialog):
                  light_position="top-left", roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
-                 restore_molecule=False, live_callback=None,
+                 restore_molecule=False, fast_render=False, live_callback=None,
                  shortcut_actions=None, alt_shortcut_defaults=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
@@ -480,12 +480,13 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        self._build_general_tab(theme, restore_molecule)
+        self._build_general_tab(theme, restore_molecule, fast_render=fast_render)
         self._build_shortcuts_tab(shortcut_actions or {}, alt_shortcut_defaults or {})
         self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position)
         self._build_atoms_bonds_tab(atom_scale, bond_width, bond_style,
                                      atom_border_mode, atom_border_scale, atom_border_width,
-                                     bond_color, lighting_intensity, light_position, roughness)
+                                     bond_color, lighting_intensity, light_position, roughness,
+                                     fast_render=fast_render)
 
         btn_row = QHBoxLayout()
         btn_make_config = QPushButton("Make Default")
@@ -503,11 +504,16 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(dialog_btns)
         layout.addLayout(btn_row)
 
-    def _build_general_tab(self, theme, restore_molecule):
+    def _build_general_tab(self, theme, restore_molecule, fast_render=False):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self._restore_cb = QCheckBox("Restore molecule")
+        self._restore_cb.setChecked(restore_molecule)
+        self._restore_cb.toggled.connect(self._on_change)
+        form.addRow("At login:", self._restore_cb)
 
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Dark", "Light"])
@@ -516,10 +522,10 @@ class SettingsDialog(QDialog):
         self._theme_combo.currentTextChanged.connect(self._on_change)
         form.addRow("Theme:", self._theme_combo)
 
-        self._restore_cb = QCheckBox("Restore molecule at login")
-        self._restore_cb.setChecked(restore_molecule)
-        self._restore_cb.toggled.connect(self._on_change)
-        form.addRow("", self._restore_cb)
+        self._fast_render_cb = QCheckBox("Fast render mode (flat atoms during drag)")
+        self._fast_render_cb.setChecked(fast_render)
+        self._fast_render_cb.stateChanged.connect(self._on_change)
+        form.addRow("Performance:", self._fast_render_cb)
 
         self.tabs.addTab(page, "&General")
 
@@ -685,7 +691,8 @@ class SettingsDialog(QDialog):
 
     def _build_atoms_bonds_tab(self, atom_scale, bond_width, bond_style,
                                 atom_border_mode, atom_border_scale, atom_border_width,
-                                bond_color, lighting_intensity, light_position, roughness):
+                                bond_color, lighting_intensity, light_position, roughness,
+                                fast_render=False):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
@@ -937,6 +944,10 @@ class SettingsDialog(QDialog):
         return self._roughness_slider.value() / 100.0
 
     @property
+    def fast_render(self) -> bool:
+        return self._fast_render_cb.isChecked()
+
+    @property
     def show_axes(self) -> bool:
         return self._show_axes_cb.isChecked()
 
@@ -958,7 +969,8 @@ class SettingsDialog(QDialog):
 
     def _section_data(self, section: str) -> dict:
         if section == "general":
-            return {"theme": self.theme, "restore_molecule": self.restore_molecule}
+            return {"theme": self.theme, "restore_molecule": self.restore_molecule,
+                    "fast_render": self.fast_render}
         if section == "overlay":
             return {
                 "bg_color": self.bg_color,
@@ -1003,6 +1015,7 @@ class SettingsDialog(QDialog):
         if section == "general":
             self._theme_combo.setCurrentText("Light")
             self._restore_cb.setChecked(False)
+            self._fast_render_cb.setChecked(False)
         elif section == "overlay":
             self._bg_btn.set_color("#ffffff")
             self._show_axes_cb.setChecked(False)
@@ -1045,6 +1058,7 @@ class SettingsDialog(QDialog):
                 "general": {
                     "theme": data.get("theme", "light"),
                     "restore_molecule": data.get("restore_molecule", False),
+                    "fast_render": data.get("fast_render", False),
                 },
                 "overlay": {
                     "bg_color": data.get("bg_color", "#ffffff"),
@@ -2765,6 +2779,12 @@ class MoleculeCanvas(QSvgWidget):
         self.paint_mode = False
         self._paint_color = "#66b2ff"
         self.build_element = "C"
+        self._cached_m_normal: np.ndarray | None = None
+        self._fast_render = False
+        self._cached_svg_prefix = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=4)
+        )
+        self._cached_grad_stops: dict = {}
         self._bonding_from: int | None = None
         self._mouse_pos: QPoint | None = None
 
@@ -2850,6 +2870,7 @@ class MoleculeCanvas(QSvgWidget):
         self._axes_ref = np.eye(3)
         self._default_view = np.eye(3)
         self.selected_atoms.clear()
+        self._cached_grad_stops.clear()
         # Auto-scale: fit the molecule to 80% of the smaller canvas dimension
         positions = np.array([[a.x, a.y, a.z] for a in mol.atoms])
         if len(positions) > 0:
@@ -2860,6 +2881,14 @@ class MoleculeCanvas(QSvgWidget):
                 w = max(self.width(),  500)
                 h = max(self.height(), 450)
                 self.base_scale = 0.40 * min(w, h) / max_extent
+            # Cache SVD normal for bond offset computation (doesn't change with rotation)
+            if len(centered) >= 3:
+                _, _, Vt = np.linalg.svd(centered)
+                self._cached_m_normal = Vt[-1]
+            else:
+                self._cached_m_normal = None
+        else:
+            self._cached_m_normal = None
         self.request_render()
 
     def reset_view(self):
@@ -2916,8 +2945,7 @@ class MoleculeCanvas(QSvgWidget):
             self.request_render()
 
     def request_render(self, delay_ms: int = 0):
-        if not self._render_timer.isActive():
-            self._render_timer.start(delay_ms)
+        self._render_timer.start(delay_ms)
 
     def get_svg_bytes(self, export_mode: bool = False) -> bytes:
         return self._render_to_bytes(export_mode=export_mode)
@@ -2930,45 +2958,42 @@ class MoleculeCanvas(QSvgWidget):
         w = w or max(self.width(),  500)
         h = h or max(self.height(), 450)
 
-        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
-            tmp = f.name
-        try:
-            render_molecule(
-                self.molecule,
-                rot_matrix_override=self._rot,
-                pan_x=self._pan[0], pan_y=self._pan[1],
-                canvas_w=w, canvas_h=h,
-                scale=self.base_scale * self._zoom,
-                atom_scale=self.atom_scale,
-                bond_width_px=self.bond_width_px,
-                bond_style=self.bond_style,
-                bond_color=self.bond_color,
-                background=self.background,
-                color_overrides=self.color_overrides or None,
-                atom_border_mode=self.atom_border_mode,
-                atom_border_scale=self.atom_border_scale,
-                atom_border_width=self.atom_border_width,
-                lighting_intensity=self.lighting_intensity,
-                light_position=self.light_position,
-                roughness=self.roughness,
-                show_axes=self.show_axes,
-                show_principal_axes=self.show_principal_axes,
-                axes_position=self.axes_position,
-                principal_axes_position=self.principal_axes_position,
-                axes_rot_override=self._rot @ np.linalg.inv(self._axes_ref),
-                active_vectors=self.active_vectors,
-                animation_phase=self.animation_phase,
-                animation_amplitude=self.animation_amplitude,
-                output_path=tmp,
-                export_mode=export_mode,
-                selected_indices=self.selected_atoms if not export_mode else None,
-                vectors=self.arrows if self._show_vectors else None,
-            )
-            with open(tmp,"rb") as f:
-                return f.read()
-        finally:
-            try: os.unlink(tmp)
-            except OSError: pass
+        result = render_molecule(
+            self.molecule,
+            rot_matrix_override=self._rot,
+            pan_x=self._pan[0], pan_y=self._pan[1],
+            canvas_w=w, canvas_h=h,
+            scale=self.base_scale * self._zoom,
+            atom_scale=self.atom_scale,
+            bond_width_px=self.bond_width_px,
+            bond_style=self.bond_style,
+            bond_color=self.bond_color,
+            background=self.background,
+            color_overrides=self.color_overrides or None,
+            atom_border_mode=self.atom_border_mode,
+            atom_border_scale=self.atom_border_scale,
+            atom_border_width=self.atom_border_width,
+            lighting_intensity=self.lighting_intensity,
+            light_position=self.light_position,
+            roughness=self.roughness,
+            show_axes=self.show_axes,
+            show_principal_axes=self.show_principal_axes,
+            axes_position=self.axes_position,
+            principal_axes_position=self.principal_axes_position,
+            axes_rot_override=self._rot @ np.linalg.inv(self._axes_ref),
+            m_normal_override=self._cached_m_normal,
+            svg_prefix=self._cached_svg_prefix,
+            cached_grad_stops=self._cached_grad_stops,
+            active_vectors=self.active_vectors,
+            animation_phase=self.animation_phase,
+            animation_amplitude=self.animation_amplitude,
+            output_path=None,
+            export_mode=export_mode,
+            fast_render=self._fast_render and self._drag_start is not None and not export_mode,
+            selected_indices=self.selected_atoms if not export_mode else None,
+            vectors=self.arrows if self._show_vectors else None,
+        )
+        return result.encode("utf-8") if isinstance(result, str) else result
 
     def _do_render(self):
         data = self._render_to_bytes()
@@ -3297,7 +3322,7 @@ class MoleculeCanvas(QSvgWidget):
         self._mouse_pos = event.position().toPoint()
         self._update_cursor(event.position().toPoint(), event.modifiers())
         if self.build_mode and self._bonding_from is not None:
-            self.request_render(delay_ms=16)
+            self.update()
             return
 
         if self.selection_mode and self._sel_drag_start is not None:
@@ -3328,7 +3353,7 @@ class MoleculeCanvas(QSvgWidget):
                     a.x += delta_3d[0]
                     a.y += delta_3d[1]
                     a.z += delta_3d[2]
-            self.request_render(delay_ms=16)
+            self.request_render(delay_ms=0)
             return
 
         if self._drag_start is None or self.molecule is None:
@@ -3362,7 +3387,7 @@ class MoleculeCanvas(QSvgWidget):
                 self._rot = R @ self._rot
 
         self.rotationChanged.emit()
-        self.request_render(delay_ms=16)
+        self.request_render(delay_ms=0)
 
     def mouseReleaseEvent(self, event):
         self._update_cursor(event.position().toPoint(), event.modifiers())
@@ -3629,11 +3654,11 @@ class MoleculeCanvas(QSvgWidget):
         factor = 1.12 if event.angleDelta().y() > 0 else (1/1.12)
         self._zoom = max(0.15, min(6.0, self._zoom * factor))
         self.rotationChanged.emit()
-        self.request_render(delay_ms=16)
+        self.request_render(delay_ms=0)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.request_render(delay_ms=80)
+        self.request_render(delay_ms=0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4483,6 +4508,7 @@ class MainWindow(QMainWindow):
     def _on_legend_color_changed(self, elem: str, hex_color: str):
         self._color_overrides[elem] = hex_color
         self._canvas.color_overrides[elem] = hex_color
+        self._canvas._cached_grad_stops.clear()
         self._canvas.request_render()
         if self._canvas.molecule:
             self._legend.update_for(self._canvas.molecule, self._color_overrides)
@@ -4492,6 +4518,7 @@ class MainWindow(QMainWindow):
         if mol is None or atom_idx < 0 or atom_idx >= len(mol.atoms):
             return
         mol.atoms[atom_idx].color = hex_color
+        self._canvas._cached_grad_stops.clear()
         self._canvas.request_render()
         self._legend.update_for(mol, self._color_overrides)
         self._status.showMessage(f"Atom {atom_idx + 1} colour set to {hex_color}.")
@@ -5217,6 +5244,7 @@ class MainWindow(QMainWindow):
                 self._apply_theme(theme)
             self._canvas.background = o.get("bg_color", g.get("bg_color", self._canvas.background))
             self._restore_on_startup = g.get("restore_molecule", False)
+            self._canvas._fast_render = g.get("fast_render", False)
         if a:
             self._canvas.atom_scale = a.get("atom_scale", self._canvas.atom_scale)
             self._canvas.bond_width_px = a.get("bond_width_px", self._canvas.bond_width_px)
@@ -5283,7 +5311,7 @@ class MainWindow(QMainWindow):
                 self._canvas.roughness,
                 self._canvas.show_axes, self._canvas.show_principal_axes,
                 self._canvas.axes_position, self._canvas.principal_axes_position,
-                restore)
+                restore, self._canvas._fast_render)
 
         def _live_update(theme, bg, ball, bw, style, colors, border_mode, border_scale,
                          border_width, bcol, lighting, pos, rough,
@@ -5324,6 +5352,7 @@ class MainWindow(QMainWindow):
             show_axes=orig[13], show_principal_axes=orig[14],
             axes_position=orig[15], principal_axes_position=orig[16],
             restore_molecule=orig[17],
+            fast_render=orig[18],
             shortcut_actions=self._shortcut_actions,
             alt_shortcut_defaults=alt_defaults,
             live_callback=_live_update, parent=self,
@@ -5348,6 +5377,8 @@ class MainWindow(QMainWindow):
             self._canvas.principal_axes_position = dlg.principal_axes_position
             self._color_overrides = dlg._color_overrides
             self._canvas.color_overrides = dlg._color_overrides
+            self._canvas._cached_grad_stops.clear()
+            self._canvas._fast_render = dlg.fast_render
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, dlg._color_overrides)
             # Apply shortcut changes
@@ -5369,7 +5400,7 @@ class MainWindow(QMainWindow):
              self._canvas.show_principal_axes,
              self._canvas.axes_position,
              self._canvas.principal_axes_position,
-             _) = orig
+             _, self._canvas._fast_render) = orig
             self._canvas.color_overrides = self._color_overrides
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, self._color_overrides)
@@ -5515,7 +5546,7 @@ class MainWindow(QMainWindow):
     def _on_zoom_change(self, value):
         self._canvas._zoom = value / 100.0
         self._zoom_lbl.setText(f"{value}%")
-        self._canvas.request_render(delay_ms=60)
+        self._canvas.request_render(delay_ms=0)
 
     def _reset_view(self):
         self._canvas.reset_view()
