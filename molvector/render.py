@@ -41,104 +41,115 @@ except ImportError:
     _HAS_CCLIB = False
 
 # ── OpenBabel data directory setup (cross-platform) ───────────────────────────
-import openbabel
+_HAS_OPENBABEL_PKG = False   # True if the openbabel *package* can be imported
+_HAS_OPENBABEL_DATA = False  # True if UFF.prm was located
+_OB_DATA_DIR = None          # path to the directory containing UFF.prm
 
-_IS_WIN = sys.platform == 'win32'
-_OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
+try:
+    import openbabel
+    _HAS_OPENBABEL_PKG = True
+except ImportError:
+    openbabel = None          # type: ignore[assignment]
 
-_OB_CANDIDATES = []
+if _HAS_OPENBABEL_PKG:
+    _IS_WIN = sys.platform == 'win32'
+    _OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
 
-# Detect if openbabel is a single-file module (e.g. openbabel.pyd on Windows)
-# vs. a package (directory with __init__.py).
-_ob_file = getattr(openbabel, '__file__', None) or ''
-_OB_PKG_DIR = os.path.dirname(_ob_file)
-_is_single_module = os.path.isfile(_ob_file) and not os.path.isdir(
-    os.path.join(_OB_PKG_DIR, os.path.splitext(os.path.basename(_ob_file))[0])
-)
+    _OB_CANDIDATES = []
 
-# 1. Environment variable — only if the path actually contains UFF.prm
-_ENV_DATADIR = os.environ.get('BABEL_DATADIR')
-if _ENV_DATADIR and os.path.isfile(os.path.join(_ENV_DATADIR, 'UFF.prm')):
-    _OB_CANDIDATES.append(_ENV_DATADIR)
+    # Detect if openbabel is a single-file module (e.g. openbabel.pyd on Windows)
+    # vs. a package (directory with __init__.py).
+    _ob_file = getattr(openbabel, '__file__', None) or ''
+    _OB_PKG_DIR = os.path.dirname(_ob_file)
+    _is_single_module = os.path.isfile(_ob_file) and not os.path.isdir(
+        os.path.join(_OB_PKG_DIR, os.path.splitext(os.path.basename(_ob_file))[0])
+    )
 
-# 2. Data bundled within the Python package (pip install openbabel-wheel)
-for ver in _OB_VERSIONS:
-    _OB_CANDIDATES.append(os.path.join(_OB_PKG_DIR, 'share', 'openbabel', ver))
-_OB_CANDIDATES += [
-    os.path.join(_OB_PKG_DIR, 'bin', 'data'),
-    os.path.join(_OB_PKG_DIR, 'data'),
-]
-# 2b. Single-file .pyd module: data lives in a subdirectory with the same
-#     basename alongside the module file itself.
-if _is_single_module:
-    _mod_stem = os.path.splitext(os.path.basename(_ob_file))[0]
-    _mod_dir = os.path.join(_OB_PKG_DIR, _mod_stem)
+    # 1. Environment variable — only if the path actually contains UFF.prm
+    _ENV_DATADIR = os.environ.get('BABEL_DATADIR')
+    if _ENV_DATADIR and os.path.isfile(os.path.join(_ENV_DATADIR, 'UFF.prm')):
+        _OB_CANDIDATES.append(_ENV_DATADIR)
+
+    # 2. Data bundled within the Python package (pip install openbabel-wheel)
     for ver in _OB_VERSIONS:
-        _OB_CANDIDATES.append(os.path.join(_mod_dir, 'share', 'openbabel', ver))
+        _OB_CANDIDATES.append(os.path.join(_OB_PKG_DIR, 'share', 'openbabel', ver))
     _OB_CANDIDATES += [
-        os.path.join(_mod_dir, 'bin', 'data'),
-        os.path.join(_mod_dir, 'data'),
+        os.path.join(_OB_PKG_DIR, 'bin', 'data'),
+        os.path.join(_OB_PKG_DIR, 'data'),
     ]
-
-# 2c. Windows openbabel-wheel: data may sit at <site-packages>/openbabel/data/
-#     but _OB_PKG_DIR could point to openbabel/openbabel/ (the compiled subdir).
-#     Walk one and two levels up from _OB_PKG_DIR looking for a data/ dir
-#     that contains UFF.prm.
-if _IS_WIN:
-    _p = _OB_PKG_DIR
-    for _ in range(3):
-        _p = os.path.dirname(_p)
-        _OB_CANDIDATES.append(os.path.join(_p, 'openbabel', 'data'))
-        _OB_CANDIDATES.append(os.path.join(_p, 'data'))
-
-# 2d. sys.prefix / sys.base_prefix — catches virtual-env and conda installs
-for _prefix in dict.fromkeys([sys.prefix, getattr(sys, 'base_prefix', sys.prefix)]):
-    for ver in _OB_VERSIONS:
-        _OB_CANDIDATES.append(os.path.join(_prefix, 'share', 'openbabel', ver))
-        if _IS_WIN:
-            _OB_CANDIDATES.append(os.path.join(_prefix, 'Library', 'share', 'openbabel', ver))
-    _OB_CANDIDATES.append(os.path.join(_prefix, 'data'))
-
-# 3. Walk up from package directory to find share/openbabel under the
-#    install prefix (catches Homebrew, Conda, Linux distro installs).
-#    On Windows conda, data lives under Library/share/openbabel/<ver>/.
-_OB_PARENT = _OB_PKG_DIR
-for _ in range(6):
-    _OB_PARENT = os.path.dirname(_OB_PARENT)
-    for ver in _OB_VERSIONS:
-        _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
-        if _IS_WIN:
-            _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'Library', 'share', 'openbabel', ver))
-
-# 4. Common absolute paths
-#    Unix: Homebrew /usr/local /usr
-#    Windows: Program Files, AppData, ProgramData, LOCALAPPDATA
-if _IS_WIN:
-    for pf_var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
-        pf = os.environ.get(pf_var, '')
-        if pf:
-            for ver in _OB_VERSIONS:
-                _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', ver, 'data'))
-                _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', 'share', 'openbabel', ver))
-    for data_var in ('APPDATA', 'PROGRAMDATA', 'LOCALAPPDATA'):
-        d = os.environ.get(data_var, '')
-        if d:
-            for ver in _OB_VERSIONS:
-                _OB_CANDIDATES.append(os.path.join(d, 'openbabel', ver))
-                _OB_CANDIDATES.append(os.path.join(d, 'openbabel', 'share', 'openbabel', ver))
-else:
-    for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+    # 2b. Single-file .pyd module: data lives in a subdirectory with the same
+    #     basename alongside the module file itself.
+    if _is_single_module:
+        _mod_stem = os.path.splitext(os.path.basename(_ob_file))[0]
+        _mod_dir = os.path.join(_OB_PKG_DIR, _mod_stem)
         for ver in _OB_VERSIONS:
-            _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
+            _OB_CANDIDATES.append(os.path.join(_mod_dir, 'share', 'openbabel', ver))
+        _OB_CANDIDATES += [
+            os.path.join(_mod_dir, 'bin', 'data'),
+            os.path.join(_mod_dir, 'data'),
+        ]
 
-_OB_DATA_DIR = None
-for d in _OB_CANDIDATES:
-    if d and os.path.isfile(os.path.join(d, 'UFF.prm')):
-        _OB_DATA_DIR = d
-        break
-if _OB_DATA_DIR and not os.environ.get('BABEL_DATADIR'):
-    os.environ['BABEL_DATADIR'] = _OB_DATA_DIR
-HAS_OPENBABEL = _OB_DATA_DIR is not None
+    # 2c. Windows openbabel-wheel: data may sit at <site-packages>/openbabel/data/
+    #     but _OB_PKG_DIR could point to openbabel/openbabel/ (the compiled subdir).
+    #     Walk one and two levels up from _OB_PKG_DIR looking for a data/ dir
+    #     that contains UFF.prm.
+    if _IS_WIN:
+        _p = _OB_PKG_DIR
+        for _ in range(3):
+            _p = os.path.dirname(_p)
+            _OB_CANDIDATES.append(os.path.join(_p, 'openbabel', 'data'))
+            _OB_CANDIDATES.append(os.path.join(_p, 'data'))
+
+    # 2d. sys.prefix / sys.base_prefix — catches virtual-env and conda installs
+    for _prefix in dict.fromkeys([sys.prefix, getattr(sys, 'base_prefix', sys.prefix)]):
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(_prefix, 'share', 'openbabel', ver))
+            if _IS_WIN:
+                _OB_CANDIDATES.append(os.path.join(_prefix, 'Library', 'share', 'openbabel', ver))
+        _OB_CANDIDATES.append(os.path.join(_prefix, 'data'))
+
+    # 3. Walk up from package directory to find share/openbabel under the
+    #    install prefix (catches Homebrew, Conda, Linux distro installs).
+    #    On Windows conda, data lives under Library/share/openbabel/<ver>/.
+    _OB_PARENT = _OB_PKG_DIR
+    for _ in range(6):
+        _OB_PARENT = os.path.dirname(_OB_PARENT)
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
+            if _IS_WIN:
+                _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'Library', 'share', 'openbabel', ver))
+
+    # 4. Common absolute paths
+    #    Unix: Homebrew /usr/local /usr
+    #    Windows: Program Files, AppData, ProgramData, LOCALAPPDATA
+    if _IS_WIN:
+        for pf_var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
+            pf = os.environ.get(pf_var, '')
+            if pf:
+                for ver in _OB_VERSIONS:
+                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', ver, 'data'))
+                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', 'share', 'openbabel', ver))
+        for data_var in ('APPDATA', 'PROGRAMDATA', 'LOCALAPPDATA'):
+            d = os.environ.get(data_var, '')
+            if d:
+                for ver in _OB_VERSIONS:
+                    _OB_CANDIDATES.append(os.path.join(d, 'openbabel', ver))
+                    _OB_CANDIDATES.append(os.path.join(d, 'openbabel', 'share', 'openbabel', ver))
+    else:
+        for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+            for ver in _OB_VERSIONS:
+                _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
+
+    for d in _OB_CANDIDATES:
+        if d and os.path.isfile(os.path.join(d, 'UFF.prm')):
+            _OB_DATA_DIR = d
+            break
+    if _OB_DATA_DIR:
+        os.environ['BABEL_DATADIR'] = _OB_DATA_DIR
+    _HAS_OPENBABEL_DATA = _OB_DATA_DIR is not None
+
+# Convenient aliases for the rest of the codebase
+HAS_OPENBABEL = _HAS_OPENBABEL_PKG and _HAS_OPENBABEL_DATA
 
 
 # ── Suppress OpenBabel stderr (incl. C-level fd 2 on Windows) ────────────────
@@ -685,7 +696,8 @@ def _parse_gaussian_log_cclib(text: str) -> Molecule:
         tmp_path = f.name
 
     try:
-        data = cclib.io.ccread(tmp_path)
+        with _suppress_ob_stderr():
+            data = cclib.io.ccread(tmp_path)
     finally:
         os.unlink(tmp_path)
 
@@ -1565,7 +1577,12 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
             ff = ob.OBForceField.FindForceField("UFF")
             ff_name = "UFF"
             if not ff.Setup(obmol):
-                return 0
+                raise RuntimeError(
+                    "Force field setup failed.  UFF.prm was found at\n"
+                    f"  {os.environ.get('BABEL_DATADIR', '?')}\n"
+                    "but the force field could not initialise for this molecule.\n"
+                    "Try:  pip install --force-reinstall openbabel-wheel"
+                )
 
         if fixed_indices:
             for idx in fixed_indices:

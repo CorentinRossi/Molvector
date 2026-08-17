@@ -71,7 +71,7 @@ from molvector.render import (
     chemical_formula, molecular_mass, VibrationalMode, ExcitedState,
     save_xyz, save_gaussian_input, save_pdb, save_mol, project_molecule,
     Atom, Bond,
-    optimize_geometry, HAS_OPENBABEL, _OB_DATA_DIR, calculate_rotational_constants, calculate_dipole_moment, generate_inchi, check_valence_issues,
+    optimize_geometry, HAS_OPENBABEL, _HAS_OPENBABEL_PKG, _OB_DATA_DIR, _suppress_ob_stderr, calculate_rotational_constants, calculate_dipole_moment, generate_inchi, check_valence_issues,
 )
 
 # ── shortcut modifier prefix ─────────────────────────────────────────────────
@@ -4337,14 +4337,15 @@ class MainWindow(QMainWindow):
             ("Gaussian input", lambda t: parse_gaussian(t))
         ]
 
-        for source_name, parser in parsers:
-            try:
-                mol = parser(text)
-                if mol and mol.atoms:
-                    src = source_name
-                    break
-            except Exception as e:
-                errors.append(f"{source_name}: {e}")
+        with _suppress_ob_stderr():
+            for source_name, parser in parsers:
+                try:
+                    mol = parser(text)
+                    if mol and mol.atoms:
+                        src = source_name
+                        break
+                except Exception as e:
+                    errors.append(f"{source_name}: {e}")
 
         if mol is None or not mol.atoms:
             err_msg = "\n".join(errors)
@@ -4425,21 +4426,29 @@ class MainWindow(QMainWindow):
             return
 
         if not HAS_OPENBABEL:
-            _hint = (
-                "OpenBabel data files (e.g. UFF.prm) were not found.\n\n"
-                "Install with:  pip install openbabel-wheel\n\n"
-            )
-            if _OB_DATA_DIR:
-                _hint += f"Detected data dir: {_OB_DATA_DIR}\n"
+            if not _HAS_OPENBABEL_PKG:
+                _hint = (
+                    "OpenBabel is not installed.\n\n"
+                    "Install it with:  pip install openbabel-wheel\n\n"
+                    "Then restart Molvector."
+                )
             else:
+                _hint = (
+                    "OpenBabel is installed but its data files (e.g. UFF.prm)\n"
+                    "could not be found.\n\n"
+                )
+                if _OB_DATA_DIR:
+                    _hint += f"Detected data dir: {_OB_DATA_DIR}\n\n"
                 _hint += (
-                    "Set the BABEL_DATADIR environment variable to the folder "
-                    "containing UFF.prm,\n"
-                    "or reinstall openbabel-wheel into the same Python "
-                    "environment as Molvector.\n"
+                    "Fixes to try:\n"
+                    "  1. Set the BABEL_DATADIR environment variable to the\n"
+                    "     folder containing UFF.prm, then restart Molvector.\n"
+                    "  2. Reinstall into the same environment:\n"
+                    "       pip install --force-reinstall openbabel-wheel\n"
+                    "  3. Use a virtual environment to avoid path conflicts."
                 )
             QMessageBox.warning(
-                self, "OpenBabel Data Not Found", _hint,
+                self, "OpenBabel Unavailable", _hint,
             )
             return
 
@@ -5194,30 +5203,42 @@ class MainWindow(QMainWindow):
             return
 
         if not HAS_OPENBABEL:
-            _hint = (
-                "OpenBabel data files (e.g. UFF.prm) were not found.\n\n"
-                "Install with:  pip install openbabel-wheel\n\n"
-            )
-            if _OB_DATA_DIR:
-                _hint += f"Detected data dir: {_OB_DATA_DIR}\n"
+            if not _HAS_OPENBABEL_PKG:
+                _hint = (
+                    "OpenBabel is not installed.\n\n"
+                    "Install it with:  pip install openbabel-wheel\n\n"
+                    "Then restart Molvector."
+                )
             else:
+                _hint = (
+                    "OpenBabel is installed but its data files (e.g. UFF.prm)\n"
+                    "could not be found.\n\n"
+                )
+                if _OB_DATA_DIR:
+                    _hint += f"Detected data dir: {_OB_DATA_DIR}\n\n"
                 _hint += (
-                    "Set the BABEL_DATADIR environment variable to the folder "
-                    "containing UFF.prm,\n"
-                    "or reinstall openbabel-wheel into the same Python "
-                    "environment as Molvector.\n"
+                    "Fixes to try:\n"
+                    "  1. Set the BABEL_DATADIR environment variable to the\n"
+                    "     folder containing UFF.prm, then restart Molvector.\n"
+                    "  2. Reinstall into the same environment:\n"
+                    "       pip install --force-reinstall openbabel-wheel\n"
+                    "  3. Use a virtual environment to avoid path conflicts."
                 )
             QMessageBox.warning(
-                self, "OpenBabel Data Not Found", _hint,
+                self, "OpenBabel Unavailable", _hint,
             )
             return
 
         self._save_history()
-        steps_taken = optimize_geometry(
-            self._canvas.molecule, 
-            max_steps=self._ff_max_steps, 
-            tol=self._ff_tol,
-        )
+        try:
+            steps_taken = optimize_geometry(
+                self._canvas.molecule, 
+                max_steps=self._ff_max_steps, 
+                tol=self._ff_tol,
+            )
+        except RuntimeError as e:
+            QMessageBox.warning(self, "Optimization Failed", str(e))
+            return
         self._canvas.request_render()
         self._update_info_panel(self._canvas.molecule)
         self._status.showMessage(f"Geometry optimized ({steps_taken} iterations).", 3000)

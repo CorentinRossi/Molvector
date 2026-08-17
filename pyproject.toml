@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molvector"
-version = "1.0.6"
+version = "1.0.7.2"
 description = "Interactive 3D Molecule Viewer and Builder"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,11 +16,11 @@ dependencies = [
     "PyQt6>=6.5",
     "mol_strudel",
     "cclib>=1.8",
-    "openbabel-wheel",
 ]
 
 [project.optional-dependencies]
 spectra = ["matplotlib"]
+openbabel = ["openbabel-wheel"]
 
 [project.urls]
 Homepage = "https://github.com/CorentinRossi/Molvector"
