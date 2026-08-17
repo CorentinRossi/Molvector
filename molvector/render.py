@@ -41,85 +41,139 @@ except ImportError:
     _HAS_CCLIB = False
 
 # ── OpenBabel data directory setup (cross-platform) ───────────────────────────
-try:
-    import openbabel
+import openbabel
 
-    _IS_WIN = sys.platform == 'win32'
-    _OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
+_IS_WIN = sys.platform == 'win32'
+_OB_VERSIONS = ('3.1.1', '3.1.0', '3.0.0')
 
-    _OB_CANDIDATES = []
+_OB_CANDIDATES = []
 
-    # Detect if openbabel is a single-file module (e.g. openbabel.pyd on Windows)
-    # vs. a package (directory with __init__.py).
-    _ob_file = getattr(openbabel, '__file__', None) or ''
-    _OB_PKG_DIR = os.path.dirname(_ob_file)
-    _is_single_module = os.path.isfile(_ob_file) and not os.path.isdir(
-        os.path.join(_OB_PKG_DIR, os.path.splitext(os.path.basename(_ob_file))[0])
-    )
+# Detect if openbabel is a single-file module (e.g. openbabel.pyd on Windows)
+# vs. a package (directory with __init__.py).
+_ob_file = getattr(openbabel, '__file__', None) or ''
+_OB_PKG_DIR = os.path.dirname(_ob_file)
+_is_single_module = os.path.isfile(_ob_file) and not os.path.isdir(
+    os.path.join(_OB_PKG_DIR, os.path.splitext(os.path.basename(_ob_file))[0])
+)
 
-    # 1. Environment variable takes precedence
-    _ENV_DATADIR = os.environ.get('BABEL_DATADIR')
-    if _ENV_DATADIR:
-        _OB_CANDIDATES.append(_ENV_DATADIR)
-    # 2. Data bundled within the Python package (pip install openbabel-wheel)
+# 1. Environment variable — only if the path actually contains UFF.prm
+_ENV_DATADIR = os.environ.get('BABEL_DATADIR')
+if _ENV_DATADIR and os.path.isfile(os.path.join(_ENV_DATADIR, 'UFF.prm')):
+    _OB_CANDIDATES.append(_ENV_DATADIR)
+
+# 2. Data bundled within the Python package (pip install openbabel-wheel)
+for ver in _OB_VERSIONS:
+    _OB_CANDIDATES.append(os.path.join(_OB_PKG_DIR, 'share', 'openbabel', ver))
+_OB_CANDIDATES += [
+    os.path.join(_OB_PKG_DIR, 'bin', 'data'),
+    os.path.join(_OB_PKG_DIR, 'data'),
+]
+# 2b. Single-file .pyd module: data lives in a subdirectory with the same
+#     basename alongside the module file itself.
+if _is_single_module:
+    _mod_stem = os.path.splitext(os.path.basename(_ob_file))[0]
+    _mod_dir = os.path.join(_OB_PKG_DIR, _mod_stem)
     for ver in _OB_VERSIONS:
-        _OB_CANDIDATES.append(os.path.join(_OB_PKG_DIR, 'share', 'openbabel', ver))
+        _OB_CANDIDATES.append(os.path.join(_mod_dir, 'share', 'openbabel', ver))
     _OB_CANDIDATES += [
-        os.path.join(_OB_PKG_DIR, 'bin', 'data'),
-        os.path.join(_OB_PKG_DIR, 'data'),
+        os.path.join(_mod_dir, 'bin', 'data'),
+        os.path.join(_mod_dir, 'data'),
     ]
-    # 2b. Single-file .pyd module: data lives in a subdirectory with the same
-    #     basename alongside the module file itself.
-    if _is_single_module:
-        _mod_stem = os.path.splitext(os.path.basename(_ob_file))[0]
-        _mod_dir = os.path.join(_OB_PKG_DIR, _mod_stem)
-        for ver in _OB_VERSIONS:
-            _OB_CANDIDATES.append(os.path.join(_mod_dir, 'share', 'openbabel', ver))
-        _OB_CANDIDATES += [
-            os.path.join(_mod_dir, 'bin', 'data'),
-            os.path.join(_mod_dir, 'data'),
-        ]
 
-    # 3. Walk up from package directory to find share/openbabel under the
-    #    install prefix (catches Homebrew, Conda, Linux distro installs).
-    #    On Windows conda, data lives under Library/share/openbabel/<ver>/.
-    _OB_PARENT = _OB_PKG_DIR
-    for _ in range(6):
-        _OB_PARENT = os.path.dirname(_OB_PARENT)
-        for ver in _OB_VERSIONS:
-            _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
-            if _IS_WIN:
-                _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'Library', 'share', 'openbabel', ver))
-    # 4. Common absolute paths
-    #    Unix: Homebrew /usr/local /usr
-    #    Windows: Program Files, AppData, ProgramData
-    if _IS_WIN:
-        for pf_var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
-            pf = os.environ.get(pf_var, '')
-            if pf:
-                for ver in _OB_VERSIONS:
-                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', ver, 'data'))
-                    _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', 'share', 'openbabel', ver))
-        for data_var in ('APPDATA', 'PROGRAMDATA'):
-            d = os.environ.get(data_var, '')
-            if d:
-                for ver in _OB_VERSIONS:
-                    _OB_CANDIDATES.append(os.path.join(d, 'openbabel', ver))
-    else:
-        for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+# 2c. Windows openbabel-wheel: data may sit at <site-packages>/openbabel/data/
+#     but _OB_PKG_DIR could point to openbabel/openbabel/ (the compiled subdir).
+#     Walk one and two levels up from _OB_PKG_DIR looking for a data/ dir
+#     that contains UFF.prm.
+if _IS_WIN:
+    _p = _OB_PKG_DIR
+    for _ in range(3):
+        _p = os.path.dirname(_p)
+        _OB_CANDIDATES.append(os.path.join(_p, 'openbabel', 'data'))
+        _OB_CANDIDATES.append(os.path.join(_p, 'data'))
+
+# 2d. sys.prefix / sys.base_prefix — catches virtual-env and conda installs
+for _prefix in dict.fromkeys([sys.prefix, getattr(sys, 'base_prefix', sys.prefix)]):
+    for ver in _OB_VERSIONS:
+        _OB_CANDIDATES.append(os.path.join(_prefix, 'share', 'openbabel', ver))
+        if _IS_WIN:
+            _OB_CANDIDATES.append(os.path.join(_prefix, 'Library', 'share', 'openbabel', ver))
+    _OB_CANDIDATES.append(os.path.join(_prefix, 'data'))
+
+# 3. Walk up from package directory to find share/openbabel under the
+#    install prefix (catches Homebrew, Conda, Linux distro installs).
+#    On Windows conda, data lives under Library/share/openbabel/<ver>/.
+_OB_PARENT = _OB_PKG_DIR
+for _ in range(6):
+    _OB_PARENT = os.path.dirname(_OB_PARENT)
+    for ver in _OB_VERSIONS:
+        _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'share', 'openbabel', ver))
+        if _IS_WIN:
+            _OB_CANDIDATES.append(os.path.join(_OB_PARENT, 'Library', 'share', 'openbabel', ver))
+
+# 4. Common absolute paths
+#    Unix: Homebrew /usr/local /usr
+#    Windows: Program Files, AppData, ProgramData, LOCALAPPDATA
+if _IS_WIN:
+    for pf_var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
+        pf = os.environ.get(pf_var, '')
+        if pf:
             for ver in _OB_VERSIONS:
-                _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
+                _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', ver, 'data'))
+                _OB_CANDIDATES.append(os.path.join(pf, 'OpenBabel', 'share', 'openbabel', ver))
+    for data_var in ('APPDATA', 'PROGRAMDATA', 'LOCALAPPDATA'):
+        d = os.environ.get(data_var, '')
+        if d:
+            for ver in _OB_VERSIONS:
+                _OB_CANDIDATES.append(os.path.join(d, 'openbabel', ver))
+                _OB_CANDIDATES.append(os.path.join(d, 'openbabel', 'share', 'openbabel', ver))
+else:
+    for prefix in ('/opt/homebrew', '/usr/local', '/usr'):
+        for ver in _OB_VERSIONS:
+            _OB_CANDIDATES.append(os.path.join(prefix, 'share', 'openbabel', ver))
 
-    _OB_DATA_DIR = None
-    for d in _OB_CANDIDATES:
-        if d and os.path.isfile(os.path.join(d, 'UFF.prm')):
-            _OB_DATA_DIR = d
-            break
-    if _OB_DATA_DIR and not os.environ.get('BABEL_DATADIR'):
-        os.environ['BABEL_DATADIR'] = _OB_DATA_DIR
-    HAS_OPENBABEL = _OB_DATA_DIR is not None
-except ImportError:
-    HAS_OPENBABEL = False
+_OB_DATA_DIR = None
+for d in _OB_CANDIDATES:
+    if d and os.path.isfile(os.path.join(d, 'UFF.prm')):
+        _OB_DATA_DIR = d
+        break
+if _OB_DATA_DIR and not os.environ.get('BABEL_DATADIR'):
+    os.environ['BABEL_DATADIR'] = _OB_DATA_DIR
+HAS_OPENBABEL = _OB_DATA_DIR is not None
+
+
+# ── Suppress OpenBabel stderr (incl. C-level fd 2 on Windows) ────────────────
+from contextlib import contextmanager
+
+@contextmanager
+def _suppress_ob_stderr():
+    """Context manager that silences both Python-level and C-level stderr.
+
+    OpenBabel's SWIG bindings may write error messages directly to file
+    descriptor 2, bypassing Python's ``sys.stderr``.  On Windows this is
+    common.  We save/redirect the real fd 2 to ``os.devnull`` while also
+    replacing ``sys.stderr``.
+    """
+    import os, sys, io
+    old_stderr = sys.stderr
+    sys.stderr = io.StringIO()
+    fd2 = None
+    try:
+        fd2 = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+    except Exception:
+        fd2 = None
+    try:
+        yield
+    finally:
+        sys.stderr = old_stderr
+        if fd2 is not None:
+            try:
+                os.dup2(fd2, 2)
+                os.close(fd2)
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1467,7 +1521,6 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
     if len(mol.atoms) < 2:
         return 0
 
-    from contextlib import redirect_stderr
     import os
     from openbabel import openbabel as ob
 
@@ -1506,7 +1559,7 @@ def optimize_geometry(mol: Molecule, max_steps: int = 500, tol: float = 0.01,
     # ── 3. Select and set up force field ──────────────────────────────────
     ff = None
     ff_name = "MMFF94s"
-    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+    with _suppress_ob_stderr():
         ff = ob.OBForceField.FindForceField(ff_name)
         if not ff.Setup(obmol):
             ff = ob.OBForceField.FindForceField("UFF")
@@ -1555,7 +1608,6 @@ def calculate_dipole_moment(mol: Molecule):
     if len(mol.atoms) < 2:
         return None, None, None
 
-    from contextlib import redirect_stderr
     import os
     from openbabel import openbabel as ob
 
@@ -1589,7 +1641,7 @@ def calculate_dipole_moment(mol: Molecule):
     obmol.SetTotalCharge(mol.charge)
 
     # ── 2. Compute EEM partial charges ────────────────────────────────────
-    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+    with _suppress_ob_stderr():
         charge_model = ob.OBChargeModel.FindType("eem")
         if charge_model is None:
             return None, None, None
@@ -1705,7 +1757,6 @@ def _generate_inchi_rdkit(mol: Molecule) -> Optional[str]:
 
 
 def _generate_inchi_openbabel(mol: Molecule) -> Optional[str]:
-    from contextlib import redirect_stderr
     import os
 
     from openbabel import openbabel as ob
@@ -1740,7 +1791,7 @@ def _generate_inchi_openbabel(mol: Molecule) -> Optional[str]:
 
     conv = ob.OBConversion()
     conv.SetOutFormat("inchi")
-    with open(os.devnull, "w") as _null, redirect_stderr(_null):
+    with _suppress_ob_stderr():
         inchi = conv.WriteString(obmol).strip()
     return inchi if inchi else None
 
