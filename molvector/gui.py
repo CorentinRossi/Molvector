@@ -35,7 +35,7 @@ Dependencies:
     pip install PyQt6 numpy svgwrite
 """
 
-import sys, os, math, json, tempfile, platform, shlex, shutil, re, random, string
+import sys, os, math, json, tempfile, platform, shlex, shutil, re, random, string, time
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 
@@ -2765,6 +2765,8 @@ class MoleculeCanvas(QSvgWidget):
         self._default_view = np.eye(3)
         self._drag_start: QPoint | None = None
         self._drag_mode = "none"
+        self._prev_pinch_value: float | None = None
+        self._last_tap_time: float = 0.0
 
         self.setMinimumSize(500, 450)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -3389,6 +3391,18 @@ class MoleculeCanvas(QSvgWidget):
         self.rotationChanged.emit()
         self.request_render(delay_ms=0)
 
+    def _any_mode_active(self):
+        return self.build_mode or self.selection_mode or self.align_mode or self.paint_mode
+
+    def mouseDoubleClickEvent(self, event):
+        if self.molecule is None or self._any_mode_active():
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.reset_view()
+            self.rotationChanged.emit()
+            self.request_render(delay_ms=0)
+            event.accept()
+
     def mouseReleaseEvent(self, event):
         self._update_cursor(event.position().toPoint(), event.modifiers())
         if self.selection_mode and self._sel_drag_start is not None:
@@ -3648,10 +3662,43 @@ class MoleculeCanvas(QSvgWidget):
         if not self.molecule: return []
         return [i for i, a in enumerate(self.molecule.atoms) if a.element != "H"]
 
+    def gestureEvent(self, event):
+        if event.type() == QEvent.Type.NativeGesture and self.molecule is not None:
+            if event.gestureType() == Qt.GestureType.PinchGesture:
+                val = event.value()
+                if self._prev_pinch_value is not None and self._prev_pinch_value != 0.0:
+                    factor = val / self._prev_pinch_value
+                    self._zoom = max(0.15, min(6.0, self._zoom * factor))
+                    self.rotationChanged.emit()
+                    self.request_render(delay_ms=0)
+                self._prev_pinch_value = val
+                return True
+            if event.gestureType() == Qt.GestureType.TapGesture and not self._any_mode_active():
+                now = time.monotonic()
+                if now - self._last_tap_time < 0.4:
+                    self._last_tap_time = 0.0
+                    self.reset_view()
+                    self.rotationChanged.emit()
+                    self.request_render(delay_ms=0)
+                    return True
+                self._last_tap_time = now
+        self._prev_pinch_value = None
+        return super().gestureEvent(event)
+
     def wheelEvent(self, event):
         if self.molecule is None:
             return
-        factor = 1.12 if event.angleDelta().y() > 0 else (1/1.12)
+        pixel = event.pixelDelta()
+        angle_y = event.angleDelta().y()
+        if not pixel.isNull():
+            # pixelDelta can be inverted by macOS natural scrolling;
+            # use angleDelta for direction, pixelDelta for smooth magnitude
+            sign = 1 if angle_y >= 0 else -1
+            factor = 1.0 + sign * (abs(pixel.y()) / 120.0) * 1.5
+        elif angle_y != 0:
+            factor = 1.12 if angle_y > 0 else (1 / 1.12)
+        else:
+            return
         self._zoom = max(0.15, min(6.0, self._zoom * factor))
         self.rotationChanged.emit()
         self.request_render(delay_ms=0)
@@ -5295,6 +5342,11 @@ class MainWindow(QMainWindow):
                         c._axes_ref = np.array(view["axes_ref"])
                     if "default_view" in view:
                         c._default_view = np.array(view["default_view"])
+                    pct = int(c._zoom * 100)
+                    self._zoom_slider.blockSignals(True)
+                    self._zoom_slider.setValue(pct)
+                    self._zoom_slider.blockSignals(False)
+                    self._zoom_lbl.setText(f"{pct}%")
                     c.request_render()
         except Exception:
             pass
