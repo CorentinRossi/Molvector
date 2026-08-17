@@ -14,3 +14,5 @@ inside the folder. Then, you can start the software with the command:
 ```bash
 molvector
 ```
+
+This software has been developed with the assistance of AI.
