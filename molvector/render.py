@@ -6,7 +6,7 @@ Ball-and-stick SVG renderer for molecules.
 Parsers:
   parse_xyz(text, name)       — standard XYZ format
   parse_gaussian(text)        — Gaussian .gjf / .com input
-  parse_gaussian_log(text)    — Gaussian .log / .out output (last geometry)
+  parse_gaussian_log(text)    — Gaussian .log / .out output (cclib-backed, legacy fallback)
   parse_pdb(text)             — standard PDB format
   parse_mol(text, name)       — MDL Molfile V2000 / V3000 format
   infer_bonds(mol)            — distance-threshold bond detection
@@ -27,12 +27,18 @@ Properties:
   calculate_dipole_moment(mol, ...) — Gasteiger-charge dipole moment estimation
 """
 
-import math, random, string, os, sys
+import math, random, string, os, sys, tempfile
 import numpy as np
 import svgwrite
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 import mol_strudel as strudel
+
+try:
+    import cclib
+    _HAS_CCLIB = True
+except ImportError:
+    _HAS_CCLIB = False
 
 # ── OpenBabel data directory setup (cross-platform) ───────────────────────────
 try:
@@ -175,6 +181,11 @@ class Molecule:
     g16_scf_energy: Optional[float] = None
     g16_opt_energy: Optional[float] = None
     g16_point_group: Optional[str] = None
+    g16_zpve: Optional[float] = None
+    g16_enthalpy: Optional[float] = None
+    g16_entropy: Optional[float] = None
+    g16_freeenergy: Optional[float] = None
+    g16_temperature: Optional[float] = None
 
 
 
@@ -604,7 +615,212 @@ def _parse_mol_v3000(text: str, name: str) -> Molecule:
     return mol
 
 
+# ── cclib-backed Gaussian log parser ─────────────────────────────────────────
+
+def _parse_gaussian_log_cclib(text: str) -> Molecule:
+    """
+    Parse a Gaussian .log / .out file using cclib.
+
+    Falls through to the legacy parser if cclib is unavailable or fails.
+    """
+    if not _HAS_CCLIB:
+        raise ImportError("cclib is not installed")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        f.write(text)
+        tmp_path = f.name
+
+    try:
+        data = cclib.io.ccread(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    if data is None:
+        raise ValueError("cclib could not parse this file")
+
+    # ── Atoms ────────────────────────────────────────────────────────────
+    atomcoords = np.array(data.atomcoords)
+    atomnos = np.array(data.atomnos)
+    atoms = []
+    for i in range(len(atomnos)):
+        z = int(atomnos[i])
+        elem = Z_TO_SYM.get(z, f"X{z}")
+        x, y, z_pos = atomcoords[-1][i]  # last geometry step
+        atoms.append(Atom(elem, float(x), float(y), float(z_pos)))
+
+    if not atoms:
+        raise ValueError("cclib parsed no atoms from the file")
+
+    # ── Charge & multiplicity ────────────────────────────────────────────
+    charge = int(data.charge) if hasattr(data, "charge") else 0
+
+    # ── Name from metadata or chemical formula ───────────────────────────
+    name = "Gaussian output"
+    if hasattr(data, "metadata") and data.metadata:
+        comments = data.metadata.get("comments", None)
+        if comments:
+            name = comments.strip().splitlines()[0][:80]
+
+    # ── Header info from raw text (cclib doesn't parse Link0 / route) ────
+    nproc = None
+    mem = None
+    chk = None
+    route_str = None
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("%nprocshared="):
+            try:
+                nproc = int(stripped.split("=", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("%nproc="):
+            try:
+                nproc = int(stripped.split("=", 1)[1])
+            except ValueError:
+                pass
+        elif stripped.startswith("%mem="):
+            mem = stripped.split("=", 1)[1]
+        elif stripped.startswith("%chk="):
+            chk = stripped.split("=", 1)[1]
+        elif stripped.startswith("#"):
+            route_parts = [stripped.lstrip("#").strip()]
+            for j in range(i + 1, min(i + 30, len(lines))):
+                s = lines[j].strip()
+                if not s or s.startswith("-") or s.startswith("*"):
+                    break
+                if s.startswith("#"):
+                    route_parts.append(s.lstrip("#").strip())
+                elif s.startswith("%"):
+                    break
+                else:
+                    if s and route_parts[-1] and (s[0].isupper() or s[0] in "(+-*"):
+                        route_parts[-1] = route_parts[-1] + s
+                    else:
+                        route_parts[-1] = route_parts[-1] + " " + s
+            route_str = "# " + " ".join(route_parts)
+            break
+
+    # ── SCF energy (eV → Hartree) ────────────────────────────────────────
+    scf_energy = None
+    if hasattr(data, "scfenergies") and data.scfenergies is not None and len(data.scfenergies) > 0:
+        scf_energy = float(data.scfenergies[-1]) / 27.211386245988
+
+    # ── Optimization energy (from metadata or SCF) ───────────────────────
+    opt_energy = None
+    # cclib doesn't separate opt energy; use last SCF for opt jobs
+    if scf_energy is not None:
+        opt_energy = scf_energy
+
+    # ── Dipole moment (Debye) ────────────────────────────────────────────
+    dipole_moment = None
+    if hasattr(data, "moments") and data.moments is not None and len(data.moments) > 1:
+        dip_vec = np.array(data.moments[1])
+        if len(dip_vec) >= 3:
+            dip_total = float(np.linalg.norm(dip_vec[:3]))
+            dipole_moment = (float(dip_vec[0]), float(dip_vec[1]), float(dip_vec[2]), dip_total)
+
+    # ── Rotational constants (MHz) ───────────────────────────────────────
+    rot_constants = None
+    if hasattr(data, "rotationalconstants") and data.rotationalconstants is not None:
+        rc = np.array(data.rotationalconstants)
+        if rc.ndim == 2 and len(rc) > 0:
+            rc = rc[-1]  # last step
+        if len(rc) >= 3:
+            rot_constants = (float(rc[0]), float(rc[1]), float(rc[2]))
+
+    # ── Vibrational modes ────────────────────────────────────────────────
+    vibrational_modes = []
+    if hasattr(data, "vibfreqs") and data.vibfreqs is not None:
+        freqs = np.array(data.vibfreqs)
+        ir_ints = np.array(data.vibirs) if hasattr(data, "vibirs") and data.vibirs is not None else np.zeros_like(freqs)
+        disps = np.array(data.vibdisps) if hasattr(data, "vibdisps") and data.vibdisps is not None else None
+        for i, freq in enumerate(freqs):
+            disp = disps[i] if disps is not None and i < len(disps) else None
+            vibrational_modes.append(VibrationalMode(
+                index=i + 1,
+                frequency=float(freq),
+                intensity=float(ir_ints[i]) if i < len(ir_ints) else 0.0,
+                displacements=disp,
+            ))
+
+    # ── Excited states (TD-DFT) ──────────────────────────────────────────
+    excited_states = []
+    if hasattr(data, "etenergies") and data.etenergies is not None:
+        et_energies = np.array(data.etenergies)  # in cm^-1
+        et_oscs = np.array(data.etoscs) if hasattr(data, "etoscs") and data.etoscs is not None else np.zeros_like(et_energies)
+        et_syms = data.etsyms if hasattr(data, "etsyms") and data.etsyms is not None else ["" for _ in et_energies]
+        for i, e_cm in enumerate(et_energies):
+            e_ev = float(e_cm) * 1.2398419843320025e-4  # cm^-1 → eV
+            wl_nm = 1e7 / float(e_cm) if float(e_cm) > 0 else 0.0  # cm^-1 → nm
+            sym = et_syms[i] if i < len(et_syms) else ""
+            excited_states.append(ExcitedState(
+                index=i + 1,
+                energy_ev=e_ev,
+                wavelength_nm=wl_nm,
+                oscillator_strength=float(et_oscs[i]) if i < len(et_oscs) else 0.0,
+                symmetry=str(sym),
+            ))
+
+    # ── Thermochemistry ──────────────────────────────────────────────────
+    zpve = float(data.zpve) if hasattr(data, "zpve") and data.zpve is not None else None
+    enthalpy = float(data.enthalpy) if hasattr(data, "enthalpy") and data.enthalpy is not None else None
+    entropy = float(data.entropy) if hasattr(data, "entropy") and data.entropy is not None else None
+    freeenergy = float(data.freeenergy) if hasattr(data, "freeenergy") and data.freeenergy is not None else None
+    temperature = float(data.temperature) if hasattr(data, "temperature") and data.temperature is not None else None
+
+    # ── Point group (from metadata) ──────────────────────────────────────
+    point_group = None
+    if hasattr(data, "metadata") and data.metadata:
+        sym = data.metadata.get("symmetry_detected", None)
+        if sym:
+            point_group = str(sym)
+
+    # ── Build Molecule ───────────────────────────────────────────────────
+    mol = Molecule(
+        name=name,
+        atoms=atoms,
+        charge=charge,
+        excited_states=excited_states,
+        vibrational_modes=vibrational_modes,
+    )
+    mol.g16_nproc = nproc
+    mol.g16_mem = mem
+    mol.g16_dipole = dipole_moment
+    mol.g16_rotconst = rot_constants
+    mol.g16_scf_energy = scf_energy
+    mol.g16_opt_energy = opt_energy
+    mol.g16_point_group = point_group
+    mol.g16_zpve = zpve
+    mol.g16_enthalpy = enthalpy
+    mol.g16_entropy = entropy
+    mol.g16_freeenergy = freeenergy
+    mol.g16_temperature = temperature
+    if chk:
+        mol.g16_chk = chk
+    if route_str:
+        mol.g16_route = route_str
+    mol.name = chemical_formula(mol)
+    return mol
+
+
 def parse_gaussian_log(text: str) -> Molecule:
+    """
+    Gaussian .log / .out output file.
+
+    Tries the cclib-backed parser first for robust parsing and extra data
+    (thermochemistry, etc.).  Falls back to the legacy hand-written parser
+    if cclib is unavailable or fails on this particular file.
+    """
+    if _HAS_CCLIB:
+        try:
+            return _parse_gaussian_log_cclib(text)
+        except Exception:
+            pass  # fall through to legacy
+    return _parse_gaussian_log_legacy(text)
+
+
+def _parse_gaussian_log_legacy(text: str) -> Molecule:
     """
     Gaussian .log / .out output file.
 

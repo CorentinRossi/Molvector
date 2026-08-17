@@ -1378,12 +1378,14 @@ class CalculationsDialog(QDialog):
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             return lbl
 
+        if mol.g16_route is not None:
+            form.addRow("Route:", sel_label(mol.g16_route))
         if mol.g16_point_group is not None:
             form.addRow("Point Group:", sel_label(mol.g16_point_group))
         if mol.g16_opt_energy is not None:
-            form.addRow("Energy:", sel_label(f"{mol.g16_opt_energy:.8f} Ha"))
-        elif mol.g16_scf_energy is not None:
-            form.addRow("Energy:", sel_label(f"{mol.g16_scf_energy:.8f} Ha"))
+            form.addRow("Optimization Energy:", sel_label(f"{mol.g16_opt_energy:.10f} Ha"))
+        if mol.g16_scf_energy is not None:
+            form.addRow("SCF Energy:", sel_label(f"{mol.g16_scf_energy:.10f} Ha"))
         if mol.g16_rotconst is not None:
             a, b, c = mol.g16_rotconst
             rc = sel_label(f"A = {a:.4f} MHz\nB = {b:.4f} MHz\nC = {c:.4f} MHz")
@@ -1398,6 +1400,22 @@ class CalculationsDialog(QDialog):
             form.addRow("Memory:", sel_label(mol.g16_mem))
         if mol.g16_chk is not None:
             form.addRow("Checkpoint:", sel_label(mol.g16_chk))
+        if mol.g16_zpve is not None:
+            form.addRow("ZPVE:", sel_label(f"{mol.g16_zpve:.10f} Ha"))
+        if mol.g16_enthalpy is not None:
+            form.addRow("Enthalpy:", sel_label(f"{mol.g16_enthalpy:.10f} Ha"))
+        if mol.g16_freeenergy is not None:
+            form.addRow("Gibbs Free Energy:", sel_label(f"{mol.g16_freeenergy:.10f} Ha"))
+        if mol.g16_entropy is not None:
+            form.addRow("Entropy:", sel_label(f"{mol.g16_entropy:.10f} Ha/K"))
+        if mol.g16_temperature is not None:
+            form.addRow("Temperature:", sel_label(f"{mol.g16_temperature:.1f} K"))
+        if mol.vibrational_modes:
+            n = len(mol.vibrational_modes)
+            form.addRow("Vibrational Modes:", sel_label(str(n)))
+        if mol.excited_states:
+            n = len(mol.excited_states)
+            form.addRow("Excited States:", sel_label(str(n)))
 
         if form.rowCount() > 0:
             gpl.addLayout(form)
