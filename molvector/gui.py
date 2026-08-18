@@ -51,7 +51,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtCore import Qt, QByteArray, QPoint, QPointF, pyqtSignal, QTimer, QSize, QRect, QRectF, QUrl, QMimeData, QEvent, QProcess, QProcessEnvironment
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence, QDesktopServices, QTextCursor
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QPalette, QFont, QCursor, QIcon, QPixmap, QImage, QPainter, QPdfWriter, QPageSize, QKeySequence, QDesktopServices, QTextCursor, QPen
 from PyQt6.QtGui import QDrag
 
 try:
@@ -2797,6 +2797,9 @@ class MoleculeCanvas(QSvgWidget):
         self.selection_mode = False
         self.align_mode = False
         self.paint_mode = False
+        self.measure_mode = False
+        self._measure_atoms: list[list[int]] = []
+        self._measure_from: int | None = None
         self._paint_color = "#66b2ff"
         self.build_element = "C"
         self._cached_m_normal: np.ndarray | None = None
@@ -3027,7 +3030,9 @@ class MoleculeCanvas(QSvgWidget):
         super().paintEvent(event)
         draw_sel = self.selection_mode and self._sel_rect is not None and self._sel_rect.isValid()
         draw_bond = self.build_mode and self._bonding_from is not None and self._mouse_pos is not None and self.molecule
-        if not draw_sel and not draw_bond:
+        draw_measure = self.measure_mode and self._measure_atoms and self.molecule
+        draw_measure_drag = self.measure_mode and self._measure_from is not None and self._mouse_pos is not None and self.molecule
+        if not draw_sel and not draw_bond and not draw_measure and not draw_measure_drag:
             return
 
         p = QPainter(self)
@@ -3045,6 +3050,37 @@ class MoleculeCanvas(QSvgWidget):
                 self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
             )
             ax, ay, az, ar = atoms[self._bonding_from]
+            p.drawLine(int(ax), int(ay), self._mouse_pos.x(), self._mouse_pos.y())
+
+        if draw_measure:
+            atoms, _ = project_molecule(
+                self.molecule, self._rot, self._pan[0], self._pan[1],
+                self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
+            )
+            font = p.font()
+            font.setPointSize(10)
+            font.setBold(True)
+            p.setFont(font)
+            for pair in self._measure_atoms:
+                i1, i2 = pair[0], pair[1]
+                x1, y1 = atoms[i1][0], atoms[i1][1]
+                x2, y2 = atoms[i2][0], atoms[i2][1]
+                a1 = self.molecule.atoms[i1]
+                a2 = self.molecule.atoms[i2]
+                dist = math.sqrt((a2.x - a1.x)**2 + (a2.y - a1.y)**2 + (a2.z - a1.z)**2)
+                p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.SolidLine))
+                p.drawLine(int(x1), int(y1), int(x2), int(y2))
+                p.setPen(QColor("red"))
+                mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+                p.drawText(int(mx) + 6, int(my) - 6, f"{dist:.2f} Å")
+
+        if draw_measure_drag:
+            atoms, _ = project_molecule(
+                self.molecule, self._rot, self._pan[0], self._pan[1],
+                self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
+            )
+            ax, ay, az, ar = atoms[self._measure_from]
+            p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.DashLine))
             p.drawLine(int(ax), int(ay), self._mouse_pos.x(), self._mouse_pos.y())
 
         p.end()
@@ -3140,6 +3176,16 @@ class MoleculeCanvas(QSvgWidget):
             self._sel_drag_start = event.position().toPoint()
             self._sel_rect = QRectF()
             self.request_render()
+            return
+
+        if self.measure_mode and event.button() == Qt.MouseButton.LeftButton:
+            idx = self._get_hit_atom(event.position().toPoint())
+            if idx is not None and self.molecule:
+                self._measure_from = idx
+                self._mouse_pos = event.position().toPoint()
+                self.update()
+                return
+            self.update()
             return
 
         if self.build_mode and event.button() == Qt.MouseButton.LeftButton:
@@ -3335,6 +3381,11 @@ class MoleculeCanvas(QSvgWidget):
                 self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             else:
                 self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        elif self.measure_mode:
+            if has_atom:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         else:
             self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
 
@@ -3342,6 +3393,11 @@ class MoleculeCanvas(QSvgWidget):
         self._mouse_pos = event.position().toPoint()
         self._update_cursor(event.position().toPoint(), event.modifiers())
         if self.build_mode and self._bonding_from is not None:
+            self.update()
+            return
+
+        if self.measure_mode and self._measure_from is not None:
+            self._mouse_pos = event.position().toPoint()
             self.update()
             return
 
@@ -3410,7 +3466,7 @@ class MoleculeCanvas(QSvgWidget):
         self.request_render(delay_ms=0)
 
     def _any_mode_active(self):
-        return self.build_mode or self.selection_mode or self.align_mode or self.paint_mode
+        return self.build_mode or self.selection_mode or self.align_mode or self.paint_mode or self.measure_mode
 
     def mouseDoubleClickEvent(self, event):
         if self.molecule is None or self._any_mode_active():
@@ -3438,6 +3494,15 @@ class MoleculeCanvas(QSvgWidget):
             self._sel_drag_start = None
             self._sel_rect = None
             self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            self.update()
+            return
+
+        if self.measure_mode and self._measure_from is not None:
+            end_idx = self._get_hit_atom(event.position().toPoint())
+            if end_idx is not None and end_idx != self._measure_from:
+                self._measure_atoms.append([self._measure_from, end_idx])
+            self._measure_from = None
+            self._mouse_pos = None
             self.update()
             return
 
@@ -3508,7 +3573,12 @@ class MoleculeCanvas(QSvgWidget):
                 self.request_render()
             return
         if event.key() == Qt.Key.Key_Escape:
-            if self.selected_atoms:
+            if self.measure_mode and (self._measure_atoms or self._measure_from is not None):
+                self._measure_atoms.clear()
+                self._measure_from = None
+                self._mouse_pos = None
+                self.update()
+            elif self.selected_atoms:
                 self.selected_atoms.clear()
                 self.request_render()
             return
@@ -3747,6 +3817,7 @@ class MainWindow(QMainWindow):
         "selection_mode": "S",
         "build_mode": "B",
         "align_mode": "A",
+        "measure_mode": "M",
         "reset_view": "R",
         "reset_xyz_axes": "Shift+R",
         "preset_xy_plane": "",
@@ -3939,6 +4010,14 @@ class MainWindow(QMainWindow):
         self._act_align_toggle = act_align_toggle
         self._shortcut_actions["align_mode"] = act_align_toggle
 
+        act_measure_toggle = QAction("Measure Mode", self)
+        act_measure_toggle.setCheckable(True)
+        act_measure_toggle.setShortcut("M")
+        act_measure_toggle.triggered.connect(self._toggle_measure_mode)
+        edit_menu.addAction(act_measure_toggle)
+        self._act_measure_toggle = act_measure_toggle
+        self._shortcut_actions["measure_mode"] = act_measure_toggle
+
         # ── View ──
         view_menu = mb.addMenu("&View")
         act_reset_view = QAction("&Reset View", self)
@@ -4105,6 +4184,19 @@ class MainWindow(QMainWindow):
         self._act_align_btn.triggered.connect(self._toggle_align_mode)
         self._build_toolbar_obj.addAction(self._act_align_btn)
 
+        # Measure tool
+        measure_path = os.path.join(assets_dir, "icon_measure.svg")
+        self._act_measure_btn = QAction(load_colored_icon(measure_path, icon_color), "Measure", self)
+        self._act_measure_btn.setCheckable(True)
+        self._act_measure_btn.setToolTip("Measure tool — click two atoms to measure distance")
+        self._act_measure_btn.triggered.connect(self._toggle_measure_mode)
+        self._build_toolbar_obj.addAction(self._act_measure_btn)
+        self._act_clear_measure = QAction("Clear", self)
+        self._act_clear_measure.setToolTip("Clear all measurements")
+        self._act_clear_measure.triggered.connect(self._clear_measurements)
+        self._build_toolbar_obj.addAction(self._act_clear_measure)
+        self._act_clear_measure.setVisible(False)
+
         # Paint tool (visible only in Selection mode)
         self._act_paint_btn = QAction("Paint atom", self)
         self._act_paint_btn.setCheckable(True)
@@ -4142,10 +4234,15 @@ class MainWindow(QMainWindow):
         self._act_auto_h = self._build_toolbar_obj.addWidget(self._auto_h_check)
 
         self._sep_build3 = self._build_toolbar_obj.addSeparator()
-        self._act_clean = QAction("Clean", self)
+        clean_path = os.path.join(assets_dir, "icon_clean.svg")
+        self._act_clean = QAction(load_colored_icon(clean_path, icon_color), "Clean", self)
         self._act_clean.setToolTip("Rapidly optimize geometry (Force Field)")
         self._act_clean.triggered.connect(self._clean_molecule)
         self._build_toolbar_obj.addAction(self._act_clean)
+        clean_btn = self._build_toolbar_obj.widgetForAction(self._act_clean)
+        if clean_btn:
+            clean_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            clean_btn.setStyleSheet("QToolButton { padding: 2px 10px 2px 6px; }")
 
     def _set_build_options_visible(self, visible: bool):
         self._sep_build1.setVisible(visible)
@@ -4635,6 +4732,10 @@ class MainWindow(QMainWindow):
         self._act_build_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_draw.svg"), color))
         if hasattr(self, '_act_align_btn'):
             self._act_align_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_align.svg"), color))
+        if hasattr(self, '_act_measure_btn'):
+            self._act_measure_btn.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_measure.svg"), color))
+        if hasattr(self, '_act_clean'):
+            self._act_clean.setIcon(load_colored_icon(os.path.join(assets_dir, "icon_clean.svg"), color))
 
     def _update_info_panel(self, mol):
         """Populate sidebar labels and status bar for a loaded molecule."""
@@ -5055,6 +5156,9 @@ class MainWindow(QMainWindow):
         elif self._canvas.paint_mode:
             self._status.showMessage("Paint: Click atom to paint · Shift+click to remove paint")
             self._hint.setText("Click atom  paint\nShift+click  remove paint")
+        elif self._canvas.measure_mode:
+            self._status.showMessage("Measure: Drag between atoms to measure distance · Multiple measurements supported · Esc to clear")
+            self._hint.setText("Drag between atoms  measure\nEsc  clear all")
         else:
             self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
             self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
@@ -5072,6 +5176,10 @@ class MainWindow(QMainWindow):
             self._canvas.align_mode = False
             self._act_paint_btn.setChecked(False)
             self._canvas.paint_mode = False
+            self._act_measure_toggle.setChecked(False)
+            self._act_measure_btn.setChecked(False)
+            self._canvas.measure_mode = False
+            self._canvas._measure_atoms.clear()
             self._set_build_options_visible(False)
         self._act_paint_btn.setVisible(enabled)
         self._act_paint_color.setVisible(enabled)
@@ -5089,6 +5197,10 @@ class MainWindow(QMainWindow):
             self._canvas.align_mode = False
             self._act_paint_btn.setChecked(False)
             self._canvas.paint_mode = False
+            self._act_measure_toggle.setChecked(False)
+            self._act_measure_btn.setChecked(False)
+            self._canvas.measure_mode = False
+            self._canvas._measure_atoms.clear()
         self._act_paint_btn.setVisible(False)
         self._act_paint_color.setVisible(False)
         self._act_clear_paint.setVisible(False)
@@ -5109,6 +5221,10 @@ class MainWindow(QMainWindow):
             self._canvas.build_mode = False
             self._act_paint_btn.setChecked(False)
             self._canvas.paint_mode = False
+            self._act_measure_toggle.setChecked(False)
+            self._act_measure_btn.setChecked(False)
+            self._canvas.measure_mode = False
+            self._canvas._measure_atoms.clear()
             self._set_build_options_visible(False)
         self._act_paint_btn.setVisible(False)
         self._act_paint_color.setVisible(False)
@@ -5130,6 +5246,41 @@ class MainWindow(QMainWindow):
         self._canvas.paint_mode = enabled
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _toggle_measure_mode(self, enabled: bool):
+        if enabled:
+            self._act_select_btn.setChecked(False)
+            self._act_select_toggle.setChecked(False)
+            self._canvas.selection_mode = False
+            self._act_build_btn.setChecked(False)
+            self._act_build_toggle.setChecked(False)
+            self._canvas.build_mode = False
+            self._act_align_toggle.setChecked(False)
+            self._act_align_btn.setChecked(False)
+            self._canvas.align_mode = False
+            self._act_paint_btn.setChecked(False)
+            self._canvas.paint_mode = False
+            self._set_build_options_visible(False)
+        self._act_paint_btn.setVisible(False)
+        self._act_paint_color.setVisible(False)
+        self._act_clear_paint.setVisible(False)
+        self._act_measure_toggle.setChecked(enabled)
+        self._act_measure_btn.setChecked(enabled)
+        self._canvas.measure_mode = enabled
+        self._act_clear_measure.setVisible(enabled)
+        if not enabled:
+            self._canvas._measure_atoms.clear()
+            self._canvas._measure_from = None
+            self._canvas._mouse_pos = None
+            self._canvas.update()
+        self._update_status_for_mode()
+        self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _clear_measurements(self):
+        self._canvas._measure_atoms.clear()
+        self._canvas._measure_from = None
+        self._canvas._mouse_pos = None
+        self._canvas.update()
 
     def _on_paint_color_changed(self, hex_color: str):
         if hasattr(self._canvas, '_paint_color'):
