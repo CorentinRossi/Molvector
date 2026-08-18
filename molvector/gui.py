@@ -22,8 +22,8 @@ Align mode (A):
   Shift+click bond  Align molecule horizontally
 
 Measure mode (M):
-  Drag between atoms   Measure distance
-  Shift+drag 2 bonds   Measure angle
+  Drag              Measure distance
+  Shift+drag        Measure angle
 
 Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
@@ -2820,6 +2820,7 @@ class MoleculeCanvas(QSvgWidget):
 
         # Selection state
         self.selected_atoms: set = set()
+        self._green_atoms: set = set()
         self._sel_drag_start: QPoint | None = None
         self._sel_rect: QRectF | None = None
 
@@ -3040,7 +3041,8 @@ class MoleculeCanvas(QSvgWidget):
         draw_measure = self.measure_mode and self._measure_atoms and self.molecule
         draw_measure_drag = self.measure_mode and self._measure_from is not None and self._mouse_pos is not None and self.molecule
         draw_angles = self.measure_mode and (self._angle_atoms or self._angle_leg1 is not None) and self.molecule
-        if not draw_sel and not draw_bond and not draw_measure and not draw_measure_drag and not draw_angles:
+        draw_green = self.align_mode and self._green_atoms and self.molecule
+        if not draw_sel and not draw_bond and not draw_measure and not draw_measure_drag and not draw_angles and not draw_green:
             return
 
         p = QPainter(self)
@@ -3169,6 +3171,19 @@ class MoleculeCanvas(QSvgWidget):
                     p.setBrush(QColor(255, 0, 0, 60))
                     p.drawEllipse(QPointF(ax, ay), ar + 4, ar + 4)
 
+        if draw_green:
+            atoms, _ = project_molecule(
+                self.molecule, self._rot, self._pan[0], self._pan[1],
+                self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
+            )
+            for idx in self._green_atoms:
+                if idx >= len(atoms):
+                    continue
+                ax, ay, az, ar = atoms[idx]
+                p.setPen(QPen(QColor(0, 200, 0), 2, Qt.PenStyle.SolidLine))
+                p.setBrush(QColor(0, 200, 0, 60))
+                p.drawEllipse(QPointF(ax, ay), ar + 4, ar + 4)
+
         p.end()
 
     # ── mouse ─────────────────────────────────────────────────────────────────
@@ -3220,9 +3235,20 @@ class MoleculeCanvas(QSvgWidget):
 
     def mousePressEvent(self, event):
         self._update_cursor(event.position().toPoint(), event.modifiers())
-        # Alt/Option+click drags an atom in build or selection mode
+        # Alt/Option+click in align mode toggles green highlight
         mod = event.modifiers()
-        if (self.build_mode or self.selection_mode) and event.button() == Qt.MouseButton.LeftButton and (mod & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
+        if self.align_mode and event.button() == Qt.MouseButton.LeftButton and (mod & Qt.KeyboardModifier.AltModifier):
+            idx = self._get_hit_atom(event.position().toPoint())
+            if idx is not None and self.molecule:
+                if idx in self._green_atoms:
+                    self._green_atoms.discard(idx)
+                else:
+                    self._green_atoms.add(idx)
+                self.update()
+                return
+
+        # Alt/Option+click drags an atom in build mode
+        if self.build_mode and event.button() == Qt.MouseButton.LeftButton and (mod & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
             idx = self._get_hit_atom(event.position().toPoint())
             if idx is not None and self.molecule:
                 self.requestHistorySave.emit()
@@ -3700,14 +3726,18 @@ class MoleculeCanvas(QSvgWidget):
                 self._angle_leg1 = None
                 self._angle_dragging = False
                 self.update()
-            elif self.selected_atoms:
+            elif self.selected_atoms or self._green_atoms:
                 self.selected_atoms.clear()
+                self._green_atoms.clear()
+                self.update()
                 self.request_render()
             return
         mod = event.modifiers()
         if event.key() == Qt.Key.Key_A and (mod & Qt.KeyboardModifier.ShiftModifier) and (mod & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)):
-            if self.selected_atoms:
+            if self.selected_atoms or self._green_atoms:
                 self.selected_atoms.clear()
+                self._green_atoms.clear()
+                self.update()
                 self.request_render()
             return
         super().keyPressEvent(event)
@@ -4379,10 +4409,14 @@ class MainWindow(QMainWindow):
         self.addToolBar(self._build_options_toolbar)
         self._build_options_toolbar.setVisible(False)
 
-        # Align toolbar (empty placeholder — available for future tools)
+        # Align toolbar
         self._align_toolbar = QToolBar("Align Tools")
         self._align_toolbar.setObjectName("alignToolbar")
         self._align_toolbar.setIconSize(QSize(22, 22))
+        self._act_align_plane = QAction("Align plane", self)
+        self._act_align_plane.setToolTip("Align the plane of 3 selected atoms parallel to the screen")
+        self._act_align_plane.triggered.connect(self._align_plane_to_screen)
+        self._align_toolbar.addAction(self._act_align_plane)
         self.addToolBar(self._align_toolbar)
         self._align_toolbar.setVisible(False)
 
@@ -5300,14 +5334,14 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Selection: Click select atom · Drag rectangle-select · Scroll zoom")
             self._hint.setText("Click  select atom\nDrag  rectangle-select")
         elif self._canvas.align_mode:
-            self._status.showMessage("Align: Click bond align vertically · Shift+click align horizontally · Scroll zoom")
-            self._hint.setText("Click bond  align vertically\nShift+click  align horizontally")
+            self._status.showMessage("Align: Click bond align vertically · Shift+click align horizontally · Alt+click atoms to mark for plane alignment")
+            self._hint.setText("Click bond  align vertically\nShift+click  align horizontally\nAlt+click  mark atoms for plane")
         elif self._canvas.paint_mode:
             self._status.showMessage("Paint: Click atom to paint · Shift+click to remove paint")
             self._hint.setText("Click atom  paint\nShift+click  remove paint")
         elif self._canvas.measure_mode:
-            self._status.showMessage("Measure: Drag atoms for distance · Shift+drag 2 bonds for angle · Esc to clear")
-            self._hint.setText("Drag between atoms  measure distance\nShift+drag 2 bonds  measure angle\nEsc  clear all")
+            self._status.showMessage("Measure: Drag atoms for distance · Shift+drag for angle · Esc to clear")
+            self._hint.setText("Drag  measure distance\nShift+drag  measure angle\nEsc  clear all")
         else:
             self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
             self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
@@ -5329,6 +5363,7 @@ class MainWindow(QMainWindow):
         self._canvas._angle_atoms.clear()
         self._canvas._angle_leg1 = None
         self._canvas._angle_dragging = False
+        self._canvas._green_atoms.clear()
 
     def _toggle_selection_mode(self, enabled: bool):
         if enabled:
@@ -5359,6 +5394,47 @@ class MainWindow(QMainWindow):
         self._switch_mode_toolbar("align" if enabled else None)
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
+
+    def _align_plane_to_screen(self):
+        green = self._canvas._green_atoms
+        if len(green) != 3:
+            QMessageBox.warning(self, "Align Plane", "Select exactly 3 atoms (Alt/Opt+click in Alignment mode) to define a plane.")
+            return
+        mol = self._canvas.molecule
+        if mol is None:
+            return
+        indices = sorted(green)
+        a1 = mol.atoms[indices[0]]
+        a2 = mol.atoms[indices[1]]
+        a3 = mol.atoms[indices[2]]
+        v1 = np.array([a2.x - a1.x, a2.y - a1.y, a2.z - a1.z])
+        v2 = np.array([a3.x - a1.x, a3.y - a1.y, a3.z - a1.z])
+        normal = np.cross(v1, v2)
+        norm_len = np.linalg.norm(normal)
+        if norm_len < 1e-10:
+            QMessageBox.warning(self, "Align Plane", "The 3 selected atoms are collinear; cannot define a plane.")
+            return
+        normal = normal / norm_len
+        target = np.array([0.0, 0.0, 1.0])
+        v_normal_view = self._canvas._rot @ normal
+        dot = np.dot(v_normal_view, target)
+        if dot < 0:
+            target = -target
+            dot = -dot
+        if dot < 0.9999:
+            sin_theta = np.linalg.norm(np.cross(v_normal_view, target))
+            if sin_theta > 1e-10:
+                cos_theta = dot
+                axis = np.cross(v_normal_view, target) / sin_theta
+                K = np.array([[0, -axis[2], axis[1]],
+                              [axis[2], 0, -axis[0]],
+                              [-axis[1], axis[0], 0]])
+                R_corr = np.eye(3) + sin_theta * K + (1.0 - cos_theta) * (K @ K)
+                self._canvas._rot = R_corr @ self._canvas._rot
+                self._canvas.rotationChanged.emit()
+                self._canvas.request_render()
+        self._canvas._green_atoms.clear()
+        self._canvas.update()
 
     def _toggle_paint_mode(self, enabled: bool):
         if enabled:
