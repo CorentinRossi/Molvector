@@ -4,9 +4,10 @@ molvector_gui.py — Interactive 3D Molecule Viewer
 PyQt6 GUI with full menu bar, appearance controls, and atom colour editor.
 
 Default controls:
-  Left-drag    Rotate molecule
-  Right-drag   Pan
-  Scroll       Zoom
+  Left-drag            Rotate molecule
+  Right-drag           Pan
+  Scroll               Zoom
+  Shift+drag           Rotate ard. bond
 
 Build mode (B):
   Left-click   Add atom
@@ -3459,7 +3460,9 @@ class MoleculeCanvas(QSvgWidget):
                             self.request_render()
             return
 
-        if self.align_mode and event.button() == Qt.MouseButton.RightButton:
+        # Shift+click on bond in neutral mode: rotate around that bond
+        mod = event.modifiers()
+        if (not self._any_mode_active()) and event.button() == Qt.MouseButton.LeftButton and (mod & Qt.KeyboardModifier.ShiftModifier):
             b_idx = self._get_hit_bond(event.position().toPoint())
             if b_idx is not None and self.molecule:
                 bond = self.molecule.bonds[b_idx]
@@ -3585,7 +3588,15 @@ class MoleculeCanvas(QSvgWidget):
             self._pan[1] += dy
         elif self._drag_mode == "rotate_around_bond" and self._align_axis is not None:
             sens = 0.008
-            angle = dx * sens
+            ax, ay, _ = self._rot @ self._align_axis
+            bond_2d = np.array([ax, -ay])
+            bond_len = np.linalg.norm(bond_2d)
+            if bond_len < 1e-6:
+                angle = dx * sens
+            else:
+                bond_2d /= bond_len
+                perp = np.array([-bond_2d[1], bond_2d[0]])
+                angle = (dx * perp[0] + dy * perp[1]) * sens
             if abs(angle) > 1e-10:
                 axis = self._rot @ self._align_axis
                 ca = math.cos(angle); sa = math.sin(angle)
@@ -4534,7 +4545,7 @@ class MainWindow(QMainWindow):
         sl.addStretch()
 
         # Hint
-        self._hint = QLabel("Drag  rotate\nRight-drag  pan\nScroll  zoom")
+        self._hint = QLabel("Drag  rotate\nRight-drag  pan\nShift+drag  rotate ard. bond\nScroll  zoom")
         self._hint.setObjectName("hint")
         self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sl.addWidget(self._hint)
@@ -5343,8 +5354,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Measure: Drag atoms for distance · Shift+drag for angle · Esc to clear")
             self._hint.setText("Drag  measure distance\nShift+drag  measure angle\nEsc  clear all")
         else:
-            self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Scroll zoom")
-            self._hint.setText("Drag  rotate\nRight-drag  pan\nScroll  zoom")
+            self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Shift+drag rotate ard. bond · Scroll zoom")
+            self._hint.setText("Drag  rotate\nRight-drag  pan\nShift+drag  rotate ard. bond\nScroll  zoom")
 
     def _deactivate_all_modes(self):
         """Uncheck every mode's UI controls and canvas flags."""
