@@ -23,8 +23,8 @@ Align mode (A):
   Shift+click bond  Align molecule horizontally
 
 Measure mode (M):
-  Drag              Measure distance
-  Shift+drag        Measure angle
+  Click/drag          Measure distance
+  Shift+drag          Measure angle
 
 Menus:
   File          Open / Save As / Export SVG / Export View / Quick SVG Export / Quit
@@ -2807,7 +2807,7 @@ class MoleculeCanvas(QSvgWidget):
         self._measure_from: int | None = None
         self._angle_atoms: list[list[int]] = []
         self._angle_leg1: tuple[int, int] | None = None
-        self._angle_dragging: bool = False
+
         self._paint_color = "#66b2ff"
         self.build_element = "C"
         self._cached_m_normal: np.ndarray | None = None
@@ -3091,7 +3091,11 @@ class MoleculeCanvas(QSvgWidget):
                 self.width(), self.height(), self.base_scale * self._zoom, self.atom_scale
             )
             ax, ay, az, ar = atoms[self._measure_from]
+            p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.SolidLine))
+            p.setBrush(QColor(255, 0, 0, 60))
+            p.drawEllipse(QPointF(ax, ay), ar + 4, ar + 4)
             p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawLine(int(ax), int(ay), self._mouse_pos.x(), self._mouse_pos.y())
 
         if draw_angles:
@@ -3171,6 +3175,10 @@ class MoleculeCanvas(QSvgWidget):
                     p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.SolidLine))
                     p.setBrush(QColor(255, 0, 0, 60))
                     p.drawEllipse(QPointF(ax, ay), ar + 4, ar + 4)
+                if self._mouse_pos is not None:
+                    p.setPen(QPen(QColor("red"), 2, Qt.PenStyle.DashLine))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawLine(int(x2), int(y2), self._mouse_pos.x(), self._mouse_pos.y())
 
         if draw_green:
             atoms, _ = project_molecule(
@@ -3295,25 +3303,40 @@ class MoleculeCanvas(QSvgWidget):
             idx = self._get_hit_atom(event.position().toPoint())
             if idx is not None and self.molecule:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    if self._angle_leg1 is None:
+                    if self._angle_leg1 is None and self._measure_from is None:
                         self._measure_from = idx
-                        self._angle_dragging = True
                         self._mouse_pos = event.position().toPoint()
                         self.update()
                         return
-                    elif idx == self._angle_leg1[1]:
-                        self._measure_from = idx
-                        self._angle_dragging = True
-                        self._mouse_pos = event.position().toPoint()
+                    elif self._measure_from is not None and self._angle_leg1 is None:
+                        if idx != self._measure_from:
+                            self._angle_leg1 = (self._measure_from, idx)
+                        self._measure_from = None
+                        self.update()
+                        return
+                    elif self._angle_leg1 is not None:
+                        i1, i2 = self._angle_leg1
+                        if idx != i1:
+                            self._angle_atoms.append([i1, i2, idx])
+                        self._angle_leg1 = None
+                        self._measure_from = None
+                        self._mouse_pos = None
                         self.update()
                         return
                     self.update()
                     return
+                if self._measure_from is not None and idx != self._measure_from:
+                    self._measure_atoms.append([self._measure_from, idx])
+                    self._measure_from = None
+                    self._mouse_pos = None
+                    self.update()
+                    return
                 self._measure_from = idx
-                self._angle_dragging = False
                 self._mouse_pos = event.position().toPoint()
                 self.update()
                 return
+            self._measure_from = None
+            self._mouse_pos = None
             self.update()
             return
 
@@ -3643,22 +3666,10 @@ class MoleculeCanvas(QSvgWidget):
 
         if self.measure_mode and self._measure_from is not None:
             end_idx = self._get_hit_atom(event.position().toPoint())
-            if self._angle_dragging:
-                if end_idx is not None and end_idx != self._measure_from:
-                    if self._angle_leg1 is None:
-                        self._angle_leg1 = (self._measure_from, end_idx)
-                    else:
-                        i1, i2 = self._angle_leg1
-                        i3 = end_idx
-                        if i3 != i1:
-                            self._angle_atoms.append([i1, i2, i3])
-                        self._angle_leg1 = None
-            else:
-                if end_idx is not None and end_idx != self._measure_from:
-                    self._measure_atoms.append([self._measure_from, end_idx])
-            self._measure_from = None
-            self._angle_dragging = False
-            self._mouse_pos = None
+            if end_idx is not None and end_idx != self._measure_from and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                self._measure_atoms.append([self._measure_from, end_idx])
+                self._measure_from = None
+                self._mouse_pos = None
             self.update()
             return
 
@@ -3735,7 +3746,6 @@ class MoleculeCanvas(QSvgWidget):
                 self._mouse_pos = None
                 self._angle_atoms.clear()
                 self._angle_leg1 = None
-                self._angle_dragging = False
                 self.update()
             elif self.selected_atoms or self._green_atoms:
                 self.selected_atoms.clear()
@@ -5351,8 +5361,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage("Paint: Click atom to paint · Shift+click to remove paint")
             self._hint.setText("Click atom  paint\nShift+click  remove paint")
         elif self._canvas.measure_mode:
-            self._status.showMessage("Measure: Drag atoms for distance · Shift+drag for angle · Esc to clear")
-            self._hint.setText("Drag  measure distance\nShift+drag  measure angle\nEsc  clear all")
+            self._status.showMessage("Measure: Click or drag atoms for distance · Shift+drag for angle · Esc to clear")
+            self._hint.setText("Click/drag  measure distance\nShift+drag  measure angle\nEsc  clear all")
         else:
             self._status.showMessage("Left-drag rotate molecule · Right-drag pan · Shift+drag rotate ard. bond · Scroll zoom")
             self._hint.setText("Drag  rotate\nRight-drag  pan\nShift+drag  rotate ard. bond\nScroll  zoom")
@@ -5373,7 +5383,7 @@ class MainWindow(QMainWindow):
         self._canvas._measure_atoms.clear()
         self._canvas._angle_atoms.clear()
         self._canvas._angle_leg1 = None
-        self._canvas._angle_dragging = False
+
         self._canvas._green_atoms.clear()
 
     def _toggle_selection_mode(self, enabled: bool):
@@ -5472,7 +5482,7 @@ class MainWindow(QMainWindow):
             self._canvas._mouse_pos = None
             self._canvas._angle_atoms.clear()
             self._canvas._angle_leg1 = None
-            self._canvas._angle_dragging = False
+    
             self._canvas.update()
         self._update_status_for_mode()
         self._canvas._update_cursor(self._canvas._mouse_pos or QPoint(0, 0), Qt.KeyboardModifier.NoModifier)
@@ -5483,7 +5493,7 @@ class MainWindow(QMainWindow):
         self._canvas._mouse_pos = None
         self._canvas._angle_atoms.clear()
         self._canvas._angle_leg1 = None
-        self._canvas._angle_dragging = False
+
         self._canvas.update()
 
     def _on_paint_color_changed(self, hex_color: str):
