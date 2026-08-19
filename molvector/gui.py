@@ -77,6 +77,7 @@ from molvector.render import (
     save_xyz, save_gaussian_input, save_pdb, save_mol, project_molecule,
     Atom, Bond,
     optimize_geometry, HAS_OPENBABEL, _HAS_OPENBABEL_PKG, _OB_DATA_DIR, _suppress_ob_stderr, calculate_rotational_constants, calculate_dipole_moment, generate_inchi, check_valence_issues,
+    center_positions, ATOMIC_MASSES,
 )
 
 # ── shortcut modifier prefix ─────────────────────────────────────────────────
@@ -472,7 +473,8 @@ class SettingsDialog(QDialog):
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
                  restore_molecule=False, fast_render=False, live_callback=None,
-                 shortcut_actions=None, alt_shortcut_defaults=None, parent=None):
+                 shortcut_actions=None, alt_shortcut_defaults=None, parent=None,
+                 show_dipole_arrow=False):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(520)
@@ -487,7 +489,8 @@ class SettingsDialog(QDialog):
 
         self._build_general_tab(theme, restore_molecule, fast_render=fast_render)
         self._build_shortcuts_tab(shortcut_actions or {}, alt_shortcut_defaults or {})
-        self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position)
+        self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position,
+                                show_dipole_arrow=show_dipole_arrow)
         self._build_atoms_bonds_tab(atom_scale, bond_width, bond_style,
                                      atom_border_mode, atom_border_scale, atom_border_width,
                                      bond_color, lighting_intensity, light_position, roughness,
@@ -658,7 +661,8 @@ class SettingsDialog(QDialog):
     def get_shortcut_overrides(self) -> tuple:
         return self._sc_collect_shortcuts()
 
-    def _build_overlay_tab(self, bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position):
+    def _build_overlay_tab(self, bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position,
+                           show_dipole_arrow=False):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
@@ -691,6 +695,11 @@ class SettingsDialog(QDialog):
         self._principal_axes_pos_combo.setFixedWidth(120)
         self._principal_axes_pos_combo.currentIndexChanged.connect(self._on_change)
         form.addRow("Position:", self._principal_axes_pos_combo)
+
+        self._show_dipole_arrow_cb = QCheckBox("Show dipole moment arrow")
+        self._show_dipole_arrow_cb.setChecked(show_dipole_arrow)
+        self._show_dipole_arrow_cb.toggled.connect(self._on_change)
+        form.addRow("Dipole arrow:", self._show_dipole_arrow_cb)
 
         self.tabs.addTab(page, "&Overlay")
 
@@ -968,6 +977,10 @@ class SettingsDialog(QDialog):
     def principal_axes_position(self) -> str:
         return self._principal_axes_pos_combo.currentText().lower().replace(" ", "-")
 
+    @property
+    def show_dipole_arrow(self) -> bool:
+        return self._show_dipole_arrow_cb.isChecked()
+
     def _section_key(self) -> str:
         return {0: "general", 1: "overlay", 2: "atoms_bonds"}.get(
             self.tabs.currentIndex(), "general")
@@ -983,6 +996,7 @@ class SettingsDialog(QDialog):
                 "show_principal_axes": self.show_principal_axes,
                 "axes_position": self.axes_position,
                 "principal_axes_position": self.principal_axes_position,
+                "show_dipole_arrow": self.show_dipole_arrow,
             }
         return {
             "atom_scale": self.ball_scale,
@@ -2858,6 +2872,9 @@ class MoleculeCanvas(QSvgWidget):
         self.active_vectors: Optional[np.ndarray] = None
         self.animation_phase: float = 0.0
         self.animation_amplitude: float = 0.0
+
+        self.dipole_arrow_3d: Optional[Tuple[np.ndarray, np.ndarray, float]] = None
+        self.show_dipole_arrow: bool = False
         
         # Build options
         self.build_mode: bool = False
@@ -2903,6 +2920,7 @@ class MoleculeCanvas(QSvgWidget):
         self._default_view = np.eye(3)
         self.selected_atoms.clear()
         self._cached_grad_stops.clear()
+        self.dipole_arrow_3d = None
         # Auto-scale: fit the molecule to 80% of the smaller canvas dimension
         positions = np.array([[a.x, a.y, a.z] for a in mol.atoms])
         if len(positions) > 0:
@@ -3043,7 +3061,8 @@ class MoleculeCanvas(QSvgWidget):
         draw_measure_drag = self.measure_mode and self._measure_from is not None and self._mouse_pos is not None and self.molecule
         draw_angles = self.measure_mode and (self._angle_atoms or self._angle_leg1 is not None) and self.molecule
         draw_green = self.align_mode and self._green_atoms and self.molecule
-        if not draw_sel and not draw_bond and not draw_measure and not draw_measure_drag and not draw_angles and not draw_green:
+        draw_dipole = self.show_dipole_arrow and self.dipole_arrow_3d is not None and self.molecule
+        if not draw_sel and not draw_bond and not draw_measure and not draw_measure_drag and not draw_angles and not draw_green and not draw_dipole:
             return
 
         p = QPainter(self)
@@ -3192,6 +3211,66 @@ class MoleculeCanvas(QSvgWidget):
                 p.setPen(QPen(QColor(0, 200, 0), 2, Qt.PenStyle.SolidLine))
                 p.setBrush(QColor(0, 200, 0, 60))
                 p.drawEllipse(QPointF(ax, ay), ar + 4, ar + 4)
+
+        if draw_dipole:
+            start_3d, end_3d, mu_mag = self.dipole_arrow_3d
+            # Project start and end points to 2D (same logic as render_molecule)
+            centered = center_positions(self.molecule.atoms)
+            cx = self.width() / 2 + self._pan[0]
+            cy = self.height() / 2 + self._pan[1]
+            CAMERA_Z = 60.0
+            s = self.base_scale * self._zoom
+
+            def _proj(pt3d):
+                rp = self._rot @ pt3d
+                zf = CAMERA_Z / (CAMERA_Z - rp[2]) if (CAMERA_Z - rp[2]) != 0 else 1.0
+                return cx + rp[0] * s * zf, cy - rp[1] * s * zf
+
+            sx, sy = _proj(start_3d)
+            ex, ey = _proj(end_3d)
+
+            # Draw thick purple line (stops at arrowhead base)
+            dx, dy = ex - sx, ey - sy
+            L = math.hypot(dx, dy)
+            if L > 1e-3:
+                ux, uy = dx / L, dy / L
+            else:
+                ux, uy = 0.0, 0.0
+            ah_len = 14.0
+            bx = ex - ux * ah_len
+            by = ey - uy * ah_len
+            dipole_pen = QPen(QColor("#9933ff"), 4, Qt.PenStyle.SolidLine)
+            dipole_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(dipole_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(int(sx), int(sy), int(bx), int(by))
+
+            # Draw large arrowhead (constant size, tip at very end)
+            if L > 1e-3:
+                ah_hw = 8.0
+                px, py = -uy, ux
+                p1 = (ex, ey)
+                p2 = (ex - ux * ah_len + px * ah_hw, ey - uy * ah_len + py * ah_hw)
+                p3 = (ex - ux * ah_len - px * ah_hw, ey - uy * ah_len - py * ah_hw)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor("#9933ff"))
+                path = QPainterPath()
+                path.moveTo(*p1)
+                path.lineTo(*p2)
+                path.lineTo(*p3)
+                path.closeSubpath()
+                p.drawPath(path)
+
+            # Label with magnitude
+            label = f"\u03bc = {mu_mag:.3f} D"
+            font = p.font()
+            font.setPointSize(12)
+            font.setBold(True)
+            p.setFont(font)
+            p.setPen(QColor("#9933ff"))
+            lx = (sx + ex) / 2 + 10
+            ly = (sy + ey) / 2 - 10
+            p.drawText(int(lx), int(ly), label)
 
         p.end()
 
@@ -4760,6 +4839,22 @@ class MainWindow(QMainWindow):
                 "Ensure the molecule has at least 2 atoms and valid coordinates.")
             return
 
+        # Compute centre of mass in centred coordinates (matching render frame)
+        centered = center_positions(mol.atoms)
+        com = np.zeros(3)
+        total_mass = 0.0
+        for i, atom in enumerate(mol.atoms):
+            mass = ATOMIC_MASSES.get(atom.element, 0.0)
+            com += mass * centered[i]
+            total_mass += mass
+        if total_mass > 0:
+            com /= total_mass
+
+        # Store dipole arrow data on canvas (start=+ end, end=- end)
+        DEBYE_PER_EANGSTROM = 4.803204
+        mu_angstrom = mu_vec / DEBYE_PER_EANGSTROM
+        self._canvas.dipole_arrow_3d = (com + mu_angstrom, com - mu_angstrom, mu_mag)
+
         formula = chemical_formula(mol)
 
         lines = [
@@ -4777,7 +4872,32 @@ class MainWindow(QMainWindow):
         for elem, q in atom_charges:
             lines.append(f"  {elem:2s}  {q:+.4f} e")
 
-        QMessageBox.information(self, 'Dipole moment', "\n".join(lines))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Dipole moment")
+        dlg.setMinimumWidth(380)
+        layout = QVBoxLayout(dlg)
+
+        text_label = QLabel("\n".join(lines))
+        text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        font = text_label.font()
+        font.setFamily("monospace")
+        text_label.setFont(font)
+        layout.addWidget(text_label)
+
+        show_cb = QCheckBox("Show dipole moment")
+        show_cb.setChecked(self._canvas.show_dipole_arrow)
+        show_cb.toggled.connect(self._on_dipole_arrow_toggled)
+        layout.addWidget(show_cb)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btn_box.accepted.connect(dlg.accept)
+        layout.addWidget(btn_box)
+
+        dlg.exec()
+
+    def _on_dipole_arrow_toggled(self, checked: bool):
+        self._canvas.show_dipole_arrow = checked
+        self._canvas.request_render()
 
     def _open_terminal(self):
         if self._terminal_dialog is not None:
@@ -5732,6 +5852,7 @@ class MainWindow(QMainWindow):
             self._canvas.show_principal_axes = o.get("show_principal_axes", self._canvas.show_principal_axes)
             self._canvas.axes_position = o.get("axes_position", self._canvas.axes_position)
             self._canvas.principal_axes_position = o.get("principal_axes_position", self._canvas.principal_axes_position)
+            self._canvas.show_dipole_arrow = o.get("show_dipole_arrow", self._canvas.show_dipole_arrow)
         self._canvas.request_render()
 
     def _maybe_restore_molecule(self):
@@ -5830,6 +5951,7 @@ class MainWindow(QMainWindow):
             shortcut_actions=self._shortcut_actions,
             alt_shortcut_defaults=alt_defaults,
             live_callback=_live_update, parent=self,
+            show_dipole_arrow=self._canvas.show_dipole_arrow,
         )
         dlg.tabs.setCurrentIndex(tab_index)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -5849,6 +5971,7 @@ class MainWindow(QMainWindow):
             self._canvas.show_principal_axes = dlg.show_principal_axes
             self._canvas.axes_position = dlg.axes_position
             self._canvas.principal_axes_position = dlg.principal_axes_position
+            self._canvas.show_dipole_arrow = dlg.show_dipole_arrow
             self._color_overrides = dlg._color_overrides
             self._canvas.color_overrides = dlg._color_overrides
             self._canvas._cached_grad_stops.clear()
