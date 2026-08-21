@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QToolBar, QMenu, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QComboBox, QPlainTextEdit, QLineEdit,
     QButtonGroup, QRadioButton, QKeySequenceEdit, QToolButton,
+    QGraphicsOpacityEffect,
 )
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtSvg import QSvgRenderer
@@ -84,6 +85,21 @@ from molvector.render import (
 def _mod(s: str) -> str:
     """Qt already maps 'Ctrl' → ⌘ on macOS; pass through unchanged."""
     return s
+
+
+def _log_error(summary: str, exc: Exception) -> str:
+    """Write a full traceback to ~/.molvector/error.log, return the file path."""
+    import traceback
+    log_dir = os.path.join(os.path.expanduser("~"), ".molvector")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "error.log")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"{'='*60}\n")
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {summary}\n")
+        f.write(f"{'─'*60}\n")
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+        f.write("\n")
+    return log_path
 
 
 def load_colored_icon(svg_path: str, color: str, size: int = 22) -> QIcon:
@@ -472,7 +488,7 @@ class SettingsDialog(QDialog):
                  light_position="top-left", roughness=1.0,
                  show_axes=False, show_principal_axes=False,
                  axes_position="bottom-left", principal_axes_position="bottom-left",
-                 restore_molecule=False, fast_render=False, live_callback=None,
+                 restore_molecule=False, fast_render=False, show_debug_menu=False, live_callback=None,
                  shortcut_actions=None, alt_shortcut_defaults=None, parent=None,
                  show_dipole_arrow=False):
         super().__init__(parent)
@@ -487,7 +503,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        self._build_general_tab(theme, restore_molecule, fast_render=fast_render)
+        self._build_general_tab(theme, restore_molecule, fast_render=fast_render, show_debug_menu=show_debug_menu)
         self._build_shortcuts_tab(shortcut_actions or {}, alt_shortcut_defaults or {})
         self._build_overlay_tab(bg_color, show_axes, show_principal_axes, axes_position, principal_axes_position,
                                 show_dipole_arrow=show_dipole_arrow)
@@ -512,7 +528,7 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(dialog_btns)
         layout.addLayout(btn_row)
 
-    def _build_general_tab(self, theme, restore_molecule, fast_render=False):
+    def _build_general_tab(self, theme, restore_molecule, fast_render=False, show_debug_menu=False):
         page = QWidget()
         form = QFormLayout(page)
         form.setSpacing(8)
@@ -534,6 +550,11 @@ class SettingsDialog(QDialog):
         self._fast_render_cb.setChecked(fast_render)
         self._fast_render_cb.stateChanged.connect(self._on_change)
         form.addRow("Performance:", self._fast_render_cb)
+
+        self._debug_menu_cb = QCheckBox("Show debug menu")
+        self._debug_menu_cb.setChecked(show_debug_menu)
+        self._debug_menu_cb.stateChanged.connect(self._on_change)
+        form.addRow("Debug:", self._debug_menu_cb)
 
         self.tabs.addTab(page, "&General")
 
@@ -962,6 +983,10 @@ class SettingsDialog(QDialog):
         return self._fast_render_cb.isChecked()
 
     @property
+    def show_debug_menu(self) -> bool:
+        return self._debug_menu_cb.isChecked()
+
+    @property
     def show_axes(self) -> bool:
         return self._show_axes_cb.isChecked()
 
@@ -988,7 +1013,7 @@ class SettingsDialog(QDialog):
     def _section_data(self, section: str) -> dict:
         if section == "general":
             return {"theme": self.theme, "restore_molecule": self.restore_molecule,
-                    "fast_render": self.fast_render}
+                    "fast_render": self.fast_render, "show_debug_menu": self.show_debug_menu}
         if section == "overlay":
             return {
                 "bg_color": self.bg_color,
@@ -1078,6 +1103,7 @@ class SettingsDialog(QDialog):
                     "theme": data.get("theme", "light"),
                     "restore_molecule": data.get("restore_molecule", False),
                     "fast_render": data.get("fast_render", False),
+                    "show_debug_menu": data.get("show_debug_menu", False),
                 },
                 "overlay": {
                     "bg_color": data.get("bg_color", "#ffffff"),
@@ -4049,6 +4075,294 @@ class MoleculeCanvas(QSvgWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NOTIFICATION WIDGET
+# ─────────────────────────────────────────────────────────────────────────────
+
+class NotificationWidget(QWidget):
+    """A single toast notification that auto-dismisses and can be closed."""
+
+    closed = pyqtSignal(object)
+
+    def __init__(self, message: str, notification_type: str = "info",
+                 duration: int = 4000, parent=None,
+                 button_text: str = None, button_callback=None):
+        super().__init__(parent)
+        self.notification_type = notification_type
+        self.duration = duration
+        self.setFixedWidth(320)
+        self.setMinimumHeight(48)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        t = THEMES[parent._main_window._current_theme] if parent and hasattr(parent, '_main_window') else THEMES["dark"]
+
+        accent_colors = {
+            "info": t['ACCENT'], "success": "#44aa66",
+            "warning": "#ccaa44", "error": "#cc4444"
+        }
+        self._accent = accent_colors.get(notification_type, t['ACCENT'])
+        self._bg = "#2a2a3a" if parent._main_window._current_theme == "dark" else "#e8eaed"
+        self._border = t['BORDER']
+        self._fg = t['FG']
+        self._fg_dim = t['FG_DIM']
+
+        self.setStyleSheet(
+            f"NotificationWidget {{ background:{self._bg}; "
+            f"border:1px solid {self._border}; border-radius:8px; }}"
+        )
+
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(4, 12, 12, 12)
+        main_layout.setSpacing(0)
+
+        # Left accent bar
+        accent_bar = QFrame()
+        accent_bar.setFixedWidth(4)
+        accent_bar.setStyleSheet(f"background:{self._accent}; border:none; border-radius:2px;")
+        main_layout.addWidget(accent_bar)
+
+        # Inner content (vertical: message on top, optional button row below)
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(10, 0, 0, 0)
+        content_layout.setSpacing(6)
+
+        # Message
+        msg_label = QLabel(message)
+        msg_label.setWordWrap(True)
+        msg_label.setStyleSheet(f"color:{self._fg}; background:transparent; border:none; font-size:12px;")
+        content_layout.addWidget(msg_label)
+
+        # Optional button row
+        if button_text and button_callback:
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.addStretch()
+            open_btn = QPushButton(button_text)
+            open_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            open_btn.setStyleSheet(
+                f"QPushButton {{ background:{self._accent}; color:#ffffff; border:none; "
+                f"border-radius:4px; font-size:11px; padding:3px 10px; }}"
+                f"QPushButton:hover {{ background:#8b0000; }}"
+            )
+            open_btn.clicked.connect(button_callback)
+            btn_row.addWidget(open_btn)
+            content_layout.addLayout(btn_row)
+
+        # Close button (top-right corner)
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(20, 20)
+        close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:{self._fg_dim}; border:none; "
+            f"border-radius:10px; font-size:14px; font-weight:bold; padding:0; }}"
+            f"QPushButton:hover {{ background:{self._border}; color:{self._fg}; }}"
+        )
+        close_btn.clicked.connect(self.close_notification)
+
+        # Wrap content + close button in a horizontal layout
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(0)
+        top_row.addLayout(content_layout, 1)
+        top_row.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        main_layout.addLayout(top_row)
+
+        # Fade
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
+        # Auto-dismiss timer
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setSingleShot(True)
+        self._fade_timer.timeout.connect(self._start_fade_out)
+        self._suppress_timer_restart = False
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if hint.height() < self.minimumHeight():
+            hint.setHeight(self.minimumHeight())
+        return hint
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.duration > 0 and not self._suppress_timer_restart:
+            self._fade_timer.start(self.duration)
+
+    def extend_timer(self, extra_ms=1000):
+        remaining = self._fade_timer.remainingTime()
+        if remaining > 0:
+            self._fade_timer.start(remaining + extra_ms)
+
+    def _start_fade_out(self):
+        from PyQt6.QtCore import (
+            QPropertyAnimation, QEasingCurve,
+        )
+        anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        anim.setDuration(250)
+        anim.setStartValue(self._opacity_effect.opacity())
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.finished.connect(self._on_fade_done)
+        self._fade_anim = anim
+        anim.start()
+
+    def _on_fade_done(self):
+        self.closed.emit(self)
+
+    def close_notification(self):
+        self._fade_timer.stop()
+        self._start_fade_out()
+
+
+class NotificationContainer(QWidget):
+    """Overlay widget that holds and manages stacked notifications in the top-right corner."""
+
+    def __init__(self, main_window: 'MainWindow'):
+        super().__init__(main_window)
+        self._main_window = main_window
+        self._notifications = []
+        self._removal_queue = []
+        self._slide_anim = None
+
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet("background:transparent;")
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(10, 10, 10, 10)
+        self._layout.setSpacing(10)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+
+    def _update_size(self):
+        h = self._layout.contentsMargins().top() + self._layout.contentsMargins().bottom()
+        for i, note in enumerate(self._notifications):
+            h += note.sizeHint().height()
+            if i > 0:
+                h += self._layout.spacing()
+        self.setFixedWidth(self._main_window.width())
+        self.setFixedHeight(h)
+
+    def _reposition(self):
+        mb_height = self._main_window.menuBar().height() if self._main_window.menuBar().isVisible() else 30
+        tb_height = 0
+        for toolbar in self._main_window.findChildren(QToolBar):
+            if toolbar.isVisible():
+                tb_height = max(tb_height, toolbar.y() + toolbar.height() - mb_height)
+        top = mb_height + max(tb_height, 4) + 8
+        self.setFixedWidth(self._main_window.width())
+        self.move(0, top)
+        self.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition()
+
+    def add_notification(self, message: str, notification_type: str = "info", duration: int = 4000,
+                          button_text: str = None, button_callback=None):
+        note = NotificationWidget(message, notification_type, duration, parent=self,
+                                  button_text=button_text, button_callback=button_callback)
+        note.closed.connect(self._remove_notification)
+        self._notifications.append(note)
+        self._layout.addWidget(note)
+        self._update_size()
+        self._reposition()
+        self.show()
+        self.raise_()
+        note.show()
+
+    def _remove_notification(self, note):
+        if note not in self._notifications:
+            return
+        # If a slide-up animation is already running, queue this removal
+        if self._slide_anim is not None and self._slide_anim.state() == self._slide_anim.State.Running:
+            if note not in self._removal_queue:
+                self._removal_queue.append(note)
+            return
+
+        old_positions = {id(n): n.pos() for n in self._notifications if n is not note}
+        self._notifications.remove(note)
+
+        # Hide remaining widgets BEFORE removeWidget so the layout
+        # reflow doesn't cause a visible flash at new positions
+        for n in self._notifications:
+            n.hide()
+
+        self._layout.removeWidget(note)
+        note.setParent(None)
+        note.blockSignals(True)
+        note.hide()
+        note.deleteLater()
+
+        if not self._notifications:
+            self._update_size()
+            self.hide()
+        else:
+            for n in self._notifications:
+                old = old_positions.get(id(n))
+                if old:
+                    n._suppress_timer_restart = True
+                    n.move(old)
+                    n.show()
+                    n._suppress_timer_restart = False
+                    n.extend_timer(1000)
+            new_positions = self._compute_positions(old_positions)
+            self._animate_slide_up(old_positions, new_positions)
+
+    def _process_removal_queue(self):
+        while self._removal_queue:
+            note = self._removal_queue.pop(0)
+            if note in self._notifications:
+                self._remove_notification(note)
+                break  # _remove_notification may re-queue if another animation starts
+
+    def _compute_positions(self, old_positions=None):
+        spacing = self._layout.spacing()
+        margin_top = self._layout.contentsMargins().top()
+        positions = {}
+        y = margin_top
+        for n in self._notifications:
+            x = old_positions[id(n)].x() if old_positions and id(n) in old_positions else n.pos().x()
+            positions[id(n)] = QPoint(x, y)
+            y += n.sizeHint().height() + spacing
+        return positions
+
+    def _animate_slide_up(self, old_positions, new_positions):
+        from PyQt6.QtCore import (
+            QPropertyAnimation, QParallelAnimationGroup, QEasingCurve,
+        )
+        group = QParallelAnimationGroup(self)
+        for note in self._notifications:
+            old_pos = old_positions.get(id(note))
+            new_pos = new_positions.get(id(note))
+            if old_pos and new_pos and old_pos != new_pos:
+                anim = QPropertyAnimation(note, b"pos")
+                anim.setDuration(200)
+                anim.setStartValue(old_pos)
+                anim.setEndValue(new_pos)
+                anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+                group.addAnimation(anim)
+        if group.animationCount() > 0:
+            group.finished.connect(self._finish_slide)
+            self._slide_anim = group
+            group.start()
+        else:
+            self._finish_slide()
+
+    def _finish_slide(self):
+        self._slide_anim = None
+        self._process_removal_queue()
+        self._update_size()
+        self._reposition()
+        if not self._notifications:
+            self.hide()
+
+    def clear_all(self):
+        for note in self._notifications[:]:
+            note.close_notification()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN WINDOW
 # ─────────────────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
@@ -4132,13 +4446,18 @@ class MainWindow(QMainWindow):
 
         self._shortcut_actions: dict = {}
         self._terminal_dialog: Optional['TerminalDialog'] = None
+        self._show_debug_menu = False
+        self._debug_menu = None
 
         self._build_central()
+        self._notification_container = NotificationContainer(self)
+        self._notification_container.hide()
         self._build_menubar()
         self._build_toolbar()
         self._setup_builder_toolbar()
         self._build_statusbar()
         self._load_appearance_config()
+        self._update_debug_menu()
         self._apply_shortcut_config()
         self._maybe_restore_molecule()
         self._show_placeholder()
@@ -4746,9 +5065,12 @@ class MainWindow(QMainWindow):
             self._current_path = path
             self._update_info_panel(mol)
             self._update_calculations_menu(mol)
+            if not getattr(self, '_restoring_session', False):
+                self.show_notification(f"Loaded {os.path.basename(path)}", "success")
         except Exception as e:
-            QMessageBox.critical(self, "Error loading file",
-                                 f"{type(e).__name__}: {e}")
+            if not getattr(self, '_restoring_session', False):
+                log_path = _log_error(f"Failed to load {path}", e)
+                self.show_notification("Failed to load file.", "error", 0, log_file=log_path)
 
     def _update_calculations_menu(self, mol: Molecule):
         # Keep G16 Input, sep, Rotational Constants, Dipole Moment, sep, Open Terminal
@@ -4825,11 +5147,9 @@ class MainWindow(QMainWindow):
                     "     folder containing UFF.prm, then restart Molvector.\n"
                     "  2. Reinstall into the same environment:\n"
                     "       pip install --force-reinstall openbabel-wheel\n"
-                    "  3. Use a virtual environment to avoid path conflicts."
+                     "  3. Use a virtual environment to avoid path conflicts."
                 )
-            QMessageBox.warning(
-                self, "OpenBabel Unavailable", _hint,
-            )
+            self.show_notification(_hint, "warning", 0)
             return
 
         mu_vec, mu_mag, atom_charges = calculate_dipole_moment(mol)
@@ -5173,10 +5493,10 @@ class MainWindow(QMainWindow):
 
         inchi = generate_inchi(mol)
         if inchi is None:
-            QMessageBox.warning(
-                self, "InChI Error",
+            self.show_notification(
                 "Failed to generate InChI for this molecule.\n"
-                "Ensure RDKit is installed:  pip install rdkit"
+                "Ensure RDKit is installed:  pip install rdkit",
+                "warning", 0
             )
             return
 
@@ -5283,9 +5603,10 @@ class MainWindow(QMainWindow):
             data = self._canvas.get_svg_bytes(export_mode=True)
             with open(path, "wb") as f:
                 f.write(data)
-            self._status.showMessage(f"Saved: {path}")
+            self.show_notification(f"Saved {os.path.basename(path)}", "success")
         except Exception as e:
-            QMessageBox.critical(self, "Error saving", str(e))
+            log_path = _log_error(f"SVG save failed for {path}", e)
+            self.show_notification("SVG save failed.", "error", 0, log_file=log_path)
 
     def _quick_svg_export(self):
         if self._canvas.molecule is None:
@@ -5427,9 +5748,10 @@ class MainWindow(QMainWindow):
                 with open(path, "wb") as f:
                     f.write(svg_data)
             
-            self._status.showMessage(f"Exported: {path}")
+            self.show_notification(f"Exported {os.path.basename(path)}", "success")
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", str(e))
+            log_path = _log_error(f"Export failed for {path}", e)
+            self.show_notification("Export failed.", "error", 0, log_file=log_path)
 
     def _save_as(self):
         mol = self._canvas.molecule
@@ -5461,9 +5783,10 @@ class MainWindow(QMainWindow):
                 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-            self._status.showMessage(f"Saved: {path}")
+            self.show_notification(f"Saved {os.path.basename(path)}", "success")
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", str(e))
+            log_path = _log_error(f"Save failed for {path}", e)
+            self.show_notification("Save failed.", "error", 0, log_file=log_path)
 
     # ── Tool mode actions ────────────────────────────────────────────────────
 
@@ -5539,7 +5862,7 @@ class MainWindow(QMainWindow):
     def _align_plane_to_screen(self):
         green = self._canvas._green_atoms
         if len(green) != 3:
-            QMessageBox.warning(self, "Align Plane", "Select exactly 3 atoms (Alt/Opt+click in Alignment mode) to define a plane.")
+            self.show_notification("Select exactly 3 atoms (Alt/Opt+click in Alignment mode) to define a plane.", "warning", 0)
             return
         mol = self._canvas.molecule
         if mol is None:
@@ -5553,7 +5876,7 @@ class MainWindow(QMainWindow):
         normal = np.cross(v1, v2)
         norm_len = np.linalg.norm(normal)
         if norm_len < 1e-10:
-            QMessageBox.warning(self, "Align Plane", "The 3 selected atoms are collinear; cannot define a plane.")
+            self.show_notification("The 3 selected atoms are collinear; cannot define a plane.", "warning", 0)
             return
         normal = normal / norm_len
         target = np.array([0.0, 0.0, 1.0])
@@ -5707,11 +6030,9 @@ class MainWindow(QMainWindow):
                     "     folder containing UFF.prm, then restart Molvector.\n"
                     "  2. Reinstall into the same environment:\n"
                     "       pip install --force-reinstall openbabel-wheel\n"
-                    "  3. Use a virtual environment to avoid path conflicts."
+                     "  3. Use a virtual environment to avoid path conflicts."
                 )
-            QMessageBox.warning(
-                self, "OpenBabel Unavailable", _hint,
-            )
+            self.show_notification(_hint, "warning", 0)
             return
 
         self._save_history()
@@ -5722,11 +6043,12 @@ class MainWindow(QMainWindow):
                 tol=self._ff_tol,
             )
         except RuntimeError as e:
-            QMessageBox.warning(self, "Optimization Failed", str(e))
+            log_path = _log_error("Molecule optimization failed", e)
+            self.show_notification("Optimization failed.", "error", 0, log_file=log_path)
             return
         self._canvas.request_render()
         self._update_info_panel(self._canvas.molecule)
-        self._status.showMessage(f"Geometry optimized ({steps_taken} iterations).", 3000)
+        self.show_notification(f"Molecule cleaned ({steps_taken} iterations).", "success")
 
     def _on_structure_changed(self):
         # UI updates only; history should be saved BEFORE the change occurs
@@ -5834,6 +6156,7 @@ class MainWindow(QMainWindow):
             self._canvas.background = o.get("bg_color", g.get("bg_color", self._canvas.background))
             self._restore_on_startup = g.get("restore_molecule", False)
             self._canvas._fast_render = g.get("fast_render", False)
+            self._show_debug_menu = g.get("show_debug_menu", False)
         if a:
             self._canvas.atom_scale = a.get("atom_scale", self._canvas.atom_scale)
             self._canvas.bond_width_px = a.get("bond_width_px", self._canvas.bond_width_px)
@@ -5872,7 +6195,9 @@ class MainWindow(QMainWindow):
                 mol_path = content
                 view = None
             if mol_path and os.path.isfile(mol_path):
+                self._restoring_session = True
                 self._load_and_display(mol_path)
+                self._restoring_session = False
                 if view and self._canvas.molecule:
                     c = self._canvas
                     if "rot" in view:
@@ -5891,12 +6216,14 @@ class MainWindow(QMainWindow):
                     self._zoom_slider.blockSignals(False)
                     self._zoom_lbl.setText(f"{pct}%")
                     c.request_render()
+                QTimer.singleShot(500, lambda: self.show_notification("Session restored", "info"))
         except Exception:
             pass
 
     def _edit_settings(self, tab_index=0):
         cfg = SettingsDialog.load_config() or {}
         restore = cfg.get("general", {}).get("restore_molecule", False)
+        show_debug = cfg.get("general", {}).get("show_debug_menu", False)
         orig = (self._current_theme, self._canvas.background,
                 self._canvas.atom_scale, self._canvas.bond_width_px,
                 self._canvas.bond_style, dict(self._color_overrides),
@@ -5906,7 +6233,7 @@ class MainWindow(QMainWindow):
                 self._canvas.roughness,
                 self._canvas.show_axes, self._canvas.show_principal_axes,
                 self._canvas.axes_position, self._canvas.principal_axes_position,
-                restore, self._canvas._fast_render)
+                restore, self._canvas._fast_render, show_debug)
 
         def _live_update(theme, bg, ball, bw, style, colors, border_mode, border_scale,
                          border_width, bcol, lighting, pos, rough,
@@ -5948,6 +6275,7 @@ class MainWindow(QMainWindow):
             axes_position=orig[15], principal_axes_position=orig[16],
             restore_molecule=orig[17],
             fast_render=orig[18],
+            show_debug_menu=orig[19],
             shortcut_actions=self._shortcut_actions,
             alt_shortcut_defaults=alt_defaults,
             live_callback=_live_update, parent=self,
@@ -5976,6 +6304,8 @@ class MainWindow(QMainWindow):
             self._canvas.color_overrides = dlg._color_overrides
             self._canvas._cached_grad_stops.clear()
             self._canvas._fast_render = dlg.fast_render
+            self._show_debug_menu = dlg.show_debug_menu
+            self._update_debug_menu()
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, dlg._color_overrides)
             # Apply shortcut changes
@@ -5997,7 +6327,8 @@ class MainWindow(QMainWindow):
              self._canvas.show_principal_axes,
              self._canvas.axes_position,
              self._canvas.principal_axes_position,
-             _, self._canvas._fast_render) = orig
+             _, self._canvas._fast_render, self._show_debug_menu) = orig
+            self._update_debug_menu()
             self._canvas.color_overrides = self._color_overrides
             if self._canvas.molecule:
                 self._legend.update_for(self._canvas.molecule, self._color_overrides)
@@ -6131,6 +6462,52 @@ class MainWindow(QMainWindow):
             "Parsers: XYZ · Gaussian input (.gjf/.com) · Gaussian log (.log/.out) · Mol file<br><br>"
             "Dependencies: PyQt6 · NumPy · svgwrite · molstrudel · RDKit · OpenBabel"
         )
+
+    def _send_test_notification(self):
+        types = [
+            ("This is an info notification.", "info"),
+            ("This is a success notification.", "success"),
+            ("This is a warning notification.", "warning"),
+            ("This is an error notification.", "error"),
+        ]
+        for i, (msg, ntype) in enumerate(types):
+            QTimer.singleShot(i * 300, lambda m=msg, t=ntype: self.show_notification(m, t))
+
+    def _update_debug_menu(self):
+        mb = self.menuBar()
+        if self._show_debug_menu:
+            if not hasattr(self, '_debug_menu') or self._debug_menu is None:
+                self._debug_menu = mb.addMenu("&Debug")
+                act_test_notif = QAction("Send Test Notifications", self)
+                act_test_notif.triggered.connect(self._send_test_notification)
+                self._debug_menu.addAction(act_test_notif)
+        else:
+            if hasattr(self, '_debug_menu') and self._debug_menu is not None:
+                mb.removeAction(self._debug_menu.menuAction())
+                self._debug_menu.deleteLater()
+                self._debug_menu = None
+
+    def show_notification(self, message: str, notification_type: str = "info", duration: int = 4000,
+                          log_file: str = None):
+        if notification_type == "error":
+            duration = 0
+        elif notification_type == "warning":
+            duration = 6000
+        button_text = None
+        button_callback = None
+        if log_file:
+            display_msg = f"{message}\n{log_file}"
+            button_text = "Open log"
+            button_callback = lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(log_file))
+        else:
+            display_msg = message
+        self._notification_container.add_notification(display_msg, notification_type, duration,
+                                                     button_text=button_text, button_callback=button_callback)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_notification_container') and self._notification_container:
+            self._notification_container._reposition()
 
     # ── callbacks ─────────────────────────────────────────────────────────────
 

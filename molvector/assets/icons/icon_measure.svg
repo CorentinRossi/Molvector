@@ -7,7 +7,7 @@
    viewBox="0 0 33.766288 31.616709"
    version="1.1"
    id="svg1"
-   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   inkscape:version="1.4.4 (dcaf3e7d, 2026-05-05)"
    sodipodi:docname="icon_measure.svg"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
@@ -26,12 +26,12 @@
      showguides="true"
      inkscape:zoom="4"
      inkscape:cx="54.25"
-     inkscape:cy="87.125"
-     inkscape:window-width="1920"
-     inkscape:window-height="1009"
-     inkscape:window-x="-8"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
+     inkscape:cy="87.25"
+     inkscape:window-width="1105"
+     inkscape:window-height="369"
+     inkscape:window-x="0"
+     inkscape:window-y="25"
+     inkscape:window-maximized="0"
      inkscape:current-layer="layer1" />
   <defs
      id="defs1" />
@@ -42,7 +42,7 @@
      transform="translate(4.0541167,-18.05142)">
     <path
        d="m 4.7810029,30.586055 v 4.233334 H 2.7697562 v -4.233334 h -3.8473104 v 2.116667 2.116667 2.116666 2.116667 h 7.036263 7.0362632 7.036263 7.036263 v -2.116667 -2.116666 -2.116667 -2.116667 h -3.847311 v 4.233334 h -2.011246 v -4.233334 h -1.177706 -5.491138 v 5.721615 h -3.09025 V 30.586055 H 5.9587088 Z"
-       style="stroke-width:0.499999"
+       style="stroke-width:0.499999;fill:#000000"
        id="path11" />
     <path
        id="path9"
